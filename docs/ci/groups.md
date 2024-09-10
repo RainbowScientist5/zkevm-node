@@ -37,7 +37,7 @@ for each of the jobs looks like this:
 ```
 strategy:
   matrix:
-    go-version: [ 1.19.x ]
+    go-version: [ 1.21.x ]
     goarch: [ "amd64" ]
     e2e-group: [ 1, 2, 3 ]
 ```
@@ -54,7 +54,7 @@ groups 1 and 3, the matrix strategy config should look like:
 ```
 strategy:
   matrix:
-    go-version: [ 1.19.x ]
+    go-version: [ 1.21.x ]
     goarch: [ "amd64" ]
     e2e-group: [ 2 ]
 ```
@@ -62,7 +62,7 @@ If we want to re-add group 1:
 ```
 strategy:
   matrix:
-    go-version: [ 1.19.x ]
+    go-version: [ 1.21.x ]
     goarch: [ "amd64" ]
     e2e-group: [ 1, 2 ]
 ```
@@ -86,5 +86,5 @@ in `.github/workflows/test-e2e.yml`
 *NOTE*: Usually groups should be as packed as possible so that we can optimize
 the number of test lanes and the total execution time. If, for instance, we have
 a group with one single test that takes 10min we should try to add tests to the
-other groups with an total excution time (adding the execution time of each test
+other groups with a total execution time (adding the execution time of each test
 in the group) with up to 10min.

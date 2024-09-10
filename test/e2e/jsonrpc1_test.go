@@ -6,6 +6,7 @@ import (
 	"math/big"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/0xPolygonHermez/zkevm-node/hex"
 	"github.com/0xPolygonHermez/zkevm-node/jsonrpc/client"
@@ -14,6 +15,7 @@ import (
 	"github.com/0xPolygonHermez/zkevm-node/pool"
 	"github.com/0xPolygonHermez/zkevm-node/test/contracts/bin/Double"
 	"github.com/0xPolygonHermez/zkevm-node/test/contracts/bin/EmitLog"
+	"github.com/0xPolygonHermez/zkevm-node/test/contracts/bin/triggerErrors"
 	"github.com/0xPolygonHermez/zkevm-node/test/operations"
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
@@ -70,6 +72,7 @@ func Test_Filters(t *testing.T) {
 	}
 	ctx := context.Background()
 	setup()
+
 	defer teardown()
 	for _, network := range networks {
 		// test newBlockFilter creation
@@ -86,9 +89,9 @@ func Test_Filters(t *testing.T) {
 
 		// test newFilter creation with block range and block hash
 		response, err = client.JSONRPCCall(network.URL, "eth_newFilter", map[string]interface{}{
-			"BlockHash": common.HexToHash("0x1"),
-			"FromBlock": "0x1",
-			"ToBlock":   "0x2",
+			"blockHash": common.HexToHash("0x1"),
+			"fromBlock": "0x1",
+			"toBlock":   "0x2",
 		})
 		require.NoError(t, err)
 		require.NotNil(t, response.Error)
@@ -97,11 +100,11 @@ func Test_Filters(t *testing.T) {
 
 		// test newFilter creation with block hash
 		response, err = client.JSONRPCCall(network.URL, "eth_newFilter", map[string]interface{}{
-			"BlockHash": common.HexToHash("0x1"),
-			"Addresses": []common.Address{
+			"blockHash": common.HexToHash("0x1"),
+			"address": []common.Address{
 				common.HexToAddress("0x2"),
 			},
-			"Topics": [][]common.Hash{
+			"topics": [][]common.Hash{
 				{common.HexToHash("0x3")},
 			},
 		})
@@ -116,12 +119,12 @@ func Test_Filters(t *testing.T) {
 
 		// test newFilter creation with block range
 		response, err = client.JSONRPCCall(network.URL, "eth_newFilter", map[string]interface{}{
-			"FromBlock": "0x1",
-			"ToBlock":   "0x2",
-			"Addresses": []common.Address{
+			"fromBlock": "0x1",
+			"toBlock":   "0x2",
+			"address": []common.Address{
 				common.HexToAddress("0x2"),
 			},
-			"Topics": [][]common.Hash{
+			"topics": [][]common.Hash{
 				{common.HexToHash("0x3")},
 			},
 		})
@@ -157,11 +160,20 @@ func Test_Filters(t *testing.T) {
 		require.False(t, uninstalled)
 
 		ethereumClient := operations.MustGetClient(network.URL)
+		zkEVMClient := client.NewClient(network.URL)
 		auth := operations.MustGetAuth(network.PrivateKey, network.ChainID)
 
 		// test getFilterChanges for a blockFilter ID
-		blockBeforeFilter, err := ethereumClient.BlockByNumber(ctx, nil)
-		require.NoError(t, err)
+		var blockBeforeFilterHash common.Hash
+		if network.Name == "Local L2" {
+			blockBeforeFilter, err := zkEVMClient.BlockByNumber(ctx, nil)
+			require.NoError(t, err)
+			blockBeforeFilterHash = *blockBeforeFilter.Hash
+		} else {
+			blockBeforeFilter, err := ethereumClient.BlockByNumber(ctx, nil)
+			require.NoError(t, err)
+			blockBeforeFilterHash = blockBeforeFilter.Hash()
+		}
 
 		response, err = client.JSONRPCCall(network.URL, "eth_newBlockFilter")
 		require.NoError(t, err)
@@ -179,8 +191,16 @@ func Test_Filters(t *testing.T) {
 		err = operations.WaitTxToBeMined(ctx, ethereumClient, tx, operations.DefaultTimeoutTxToBeMined)
 		require.NoError(t, err)
 
-		blockAfterFilter, err := ethereumClient.BlockByNumber(ctx, nil)
-		require.NoError(t, err)
+		var blockAfterFilterHash common.Hash
+		if network.Name == "Local L2" {
+			blockAfterFilter, err := zkEVMClient.BlockByNumber(ctx, nil)
+			require.NoError(t, err)
+			blockAfterFilterHash = *blockAfterFilter.Hash
+		} else {
+			blockAfterFilter, err := ethereumClient.BlockByNumber(ctx, nil)
+			require.NoError(t, err)
+			blockAfterFilterHash = blockAfterFilter.Hash()
+		}
 
 		response, err = client.JSONRPCCall(network.URL, "eth_getFilterChanges", blockFilterId)
 		require.NoError(t, err)
@@ -191,8 +211,8 @@ func Test_Filters(t *testing.T) {
 		err = json.Unmarshal(response.Result, &blockFilterChanges)
 		require.NoError(t, err)
 
-		assert.NotEqual(t, blockBeforeFilter.Hash().String(), blockFilterChanges[0].String())
-		assert.Equal(t, blockAfterFilter.Hash().String(), blockFilterChanges[len(blockFilterChanges)-1].String())
+		assert.NotEqual(t, blockBeforeFilterHash.String(), blockFilterChanges[0].String())
+		assert.Equal(t, blockAfterFilterHash.String(), blockFilterChanges[len(blockFilterChanges)-1].String(), "network: "+network.Name+"blockAfterFilterHash")
 
 		// test getFilterChanges for a logFilter ID
 		// create a SC to emit some logs
@@ -202,7 +222,7 @@ func Test_Filters(t *testing.T) {
 		require.NoError(t, err)
 
 		response, err = client.JSONRPCCall(network.URL, "eth_newFilter", map[string]interface{}{
-			"Addresses": []common.Address{scAddr},
+			"address": []common.Address{scAddr},
 		})
 		require.NoError(t, err)
 		require.Nil(t, response.Error)
@@ -258,7 +278,7 @@ func Test_Filters(t *testing.T) {
 		require.NoError(t, err)
 
 		assert.Equal(t, 30, len(logs))
-		assert.Equal(t, 20, len(logFilterChanges))
+		assert.Equal(t, 20, len(logFilterChanges), "network: "+network.Name+" logFilterChanges")
 	}
 }
 
@@ -331,6 +351,7 @@ func Test_Block(t *testing.T) {
 	for _, network := range networks {
 		log.Infof("Network %s", network.Name)
 		ethereumClient, err := ethclient.Dial(network.URL)
+		zkEVMClient := client.NewClient(network.URL)
 		require.NoError(t, err)
 		auth, err := operations.GetAuth(network.PrivateKey, network.ChainID)
 		require.NoError(t, err)
@@ -347,34 +368,46 @@ func Test_Block(t *testing.T) {
 		require.Equal(t, receipt.Type, tx.Type())
 		require.Equal(t, uint(0), receipt.TransactionIndex)
 
+		if network.Name == "Local L2" {
+			block, err := zkEVMClient.BlockByNumber(ctx, receipt.BlockNumber)
+			require.NoError(t, err)
+			require.NotNil(t, block)
+			require.Equal(t, receipt.BlockNumber.Uint64(), uint64(block.Number))
+			require.Equal(t, receipt.BlockHash.String(), block.Hash.String())
+
+			block, err = zkEVMClient.BlockByHash(ctx, receipt.BlockHash)
+			require.NoError(t, err)
+			require.NotNil(t, block)
+			require.Equal(t, receipt.BlockNumber.Uint64(), uint64(block.Number))
+			require.Equal(t, receipt.BlockHash.String(), block.Hash.String())
+		} else {
+			block, err := ethereumClient.BlockByNumber(ctx, receipt.BlockNumber)
+			require.NoError(t, err)
+			require.NotNil(t, block)
+			require.Equal(t, receipt.BlockNumber.Uint64(), block.NumberU64())
+			require.Equal(t, receipt.BlockHash.String(), block.Hash().String())
+
+			block, err = ethereumClient.BlockByHash(ctx, receipt.BlockHash)
+			require.NoError(t, err)
+			require.NotNil(t, block)
+			require.Equal(t, receipt.BlockNumber.Uint64(), block.NumberU64())
+			require.Equal(t, receipt.BlockHash.String(), block.Hash().String())
+		}
+
 		blockNumber, err := ethereumClient.BlockNumber(ctx)
 		require.NoError(t, err)
 		log.Infof("\nBlock num %d", blockNumber)
 		require.GreaterOrEqual(t, blockNumber, receipt.BlockNumber.Uint64())
 
-		block, err := ethereumClient.BlockByNumber(ctx, receipt.BlockNumber)
-		require.NoError(t, err)
-		require.NotNil(t, block)
-		require.Equal(t, receipt.BlockNumber.Uint64(), block.Number().Uint64())
-		require.Equal(t, receipt.BlockHash.String(), block.Hash().String())
-
-		block, err = ethereumClient.BlockByHash(ctx, receipt.BlockHash)
-		require.NoError(t, err)
-		require.NotNil(t, block)
-		require.Equal(t, receipt.BlockNumber.Uint64(), block.Number().Uint64())
-		require.Equal(t, receipt.BlockHash.String(), block.Hash().String())
-
-		nonExistentBlockNumber := big.NewInt(0).SetUint64(blockNumber + uint64(1))
-		block, err = ethereumClient.BlockByNumber(ctx, nonExistentBlockNumber)
+		nonExistentBlockNumber := big.NewInt(0).SetUint64(blockNumber + uint64(1000))
+		_, err = ethereumClient.BlockByNumber(ctx, nonExistentBlockNumber)
 		require.Error(t, err)
-		require.Nil(t, block)
 
 		nonExistentBlockHash := common.HexToHash("0xFFFFFF")
-		block, err = ethereumClient.BlockByHash(ctx, nonExistentBlockHash)
+		_, err = ethereumClient.BlockByHash(ctx, nonExistentBlockHash)
 		require.Error(t, err)
-		require.Nil(t, block)
-		// its pending
 
+		// its pending
 		response, err := client.JSONRPCCall(network.URL, "eth_getBlockTransactionCountByNumber", hexutil.EncodeBig(receipt.BlockNumber))
 		require.NoError(t, err)
 		require.Nil(t, response.Error)
@@ -421,7 +454,6 @@ func Test_Block(t *testing.T) {
 		}
 
 		// checks for successful query
-
 		require.Equal(t, hexutil.EncodeBig(receipt.BlockNumber), newTx.BlockNumber)
 		require.Equal(t, receipt.BlockHash.String(), newTx.BlockHash)
 		require.Equal(t, hexutil.EncodeUint64(tx.Nonce()), newTx.Nonce)
@@ -532,5 +564,292 @@ func Test_Transactions(t *testing.T) {
 		payload := big.NewInt(5)
 		_, err = instance.Double(callOpts, payload)
 		require.ErrorContains(t, err, "no contract code at given address")
+	}
+}
+
+func Test_OOCErrors(t *testing.T) {
+	if testing.Short() {
+		t.Skip()
+	}
+	ctx := context.Background()
+	setup()
+	defer teardown()
+	ethClient, err := ethclient.Dial(operations.DefaultL2NetworkURL)
+	require.NoError(t, err)
+	auth, err := operations.GetAuth(operations.DefaultSequencerPrivateKey, operations.DefaultL2ChainID)
+	require.NoError(t, err)
+
+	type testCase struct {
+		name          string
+		execute       func(*testing.T, context.Context, *triggerErrors.TriggerErrors, *ethclient.Client, bind.TransactOpts) string
+		expectedError string
+	}
+
+	testCases := []testCase{
+		{
+			name: "call OOC steps",
+			execute: func(t *testing.T, ctx context.Context, sc *triggerErrors.TriggerErrors, c *ethclient.Client, a bind.TransactOpts) string {
+				err := sc.OutOfCountersSteps(nil)
+				return err.Error()
+			},
+			expectedError: "failed to execute the unsigned transaction: main execution exceeded the maximum number of steps",
+		},
+		{
+			name: "call OOC keccaks",
+			execute: func(t *testing.T, ctx context.Context, sc *triggerErrors.TriggerErrors, c *ethclient.Client, a bind.TransactOpts) string {
+				_, err := sc.OutOfCountersKeccaks(nil)
+				return err.Error()
+			},
+			expectedError: "failed to execute the unsigned transaction: not enough keccak counters to continue the execution",
+		},
+		{
+			name: "call OOC poseidon",
+			execute: func(t *testing.T, ctx context.Context, sc *triggerErrors.TriggerErrors, c *ethclient.Client, a bind.TransactOpts) string {
+				a.GasLimit = 30000000
+				a.NoSend = true
+				tx, err := sc.OutOfCountersPoseidon(&a)
+				require.NoError(t, err)
+
+				err = c.SendTransaction(ctx, tx)
+				return err.Error()
+			},
+			expectedError: "failed to add tx to the pool: not enough poseidon counters to continue the execution",
+		},
+		{
+			name: "estimate gas OOC poseidon",
+			execute: func(t *testing.T, ctx context.Context, sc *triggerErrors.TriggerErrors, c *ethclient.Client, a bind.TransactOpts) string {
+				a.GasLimit = 30000000
+				a.NoSend = true
+				tx, err := sc.OutOfCountersPoseidon(&a)
+				require.NoError(t, err)
+
+				_, err = c.EstimateGas(ctx, ethereum.CallMsg{
+					From:     a.From,
+					To:       tx.To(),
+					Gas:      tx.Gas(),
+					GasPrice: tx.GasPrice(),
+					Value:    tx.Value(),
+					Data:     tx.Data(),
+				})
+				return err.Error()
+			},
+			expectedError: "not enough poseidon counters to continue the execution",
+		},
+		{
+			name: "estimate gas OOG",
+			execute: func(t *testing.T, ctx context.Context, sc *triggerErrors.TriggerErrors, c *ethclient.Client, a bind.TransactOpts) string {
+				a.GasLimit = 50000
+				a.NoSend = true
+				tx, err := sc.OutOfCountersPoseidon(&a)
+				require.NoError(t, err)
+
+				_, err = c.EstimateGas(ctx, ethereum.CallMsg{
+					From:     a.From,
+					To:       tx.To(),
+					Gas:      tx.Gas(),
+					GasPrice: tx.GasPrice(),
+					Value:    tx.Value(),
+					Data:     tx.Data(),
+				})
+				return err.Error()
+			},
+			expectedError: "gas required exceeds allowance (50000)",
+		},
+	}
+
+	// deploy triggerErrors SC
+	_, tx, sc, err := triggerErrors.DeployTriggerErrors(auth, ethClient)
+	require.NoError(t, err)
+
+	err = operations.WaitTxToBeMined(ctx, ethClient, tx, operations.DefaultTimeoutTxToBeMined)
+	require.NoError(t, err)
+
+	// create TX that cause an OOC
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			err := testCase.execute(t, context.Background(), sc, ethClient, *auth)
+			assert.Equal(t, testCase.expectedError, err)
+		})
+	}
+}
+
+func Test_EstimateCounters(t *testing.T) {
+	if testing.Short() {
+		t.Skip()
+	}
+	ctx := context.Background()
+	setup()
+	defer teardown()
+	ethClient, err := ethclient.Dial(operations.DefaultL2NetworkURL)
+	require.NoError(t, err)
+	auth, err := operations.GetAuth(operations.DefaultSequencerPrivateKey, operations.DefaultL2ChainID)
+	require.NoError(t, err)
+
+	expectedCountersLimits := types.ZKCountersLimits{
+		MaxGasUsed:          types.ArgUint64(hex.DecodeUint64("0x1c9c380")),
+		MaxKeccakHashes:     types.ArgUint64(hex.DecodeUint64("0x861")),
+		MaxPoseidonHashes:   types.ArgUint64(hex.DecodeUint64("0x3d9c5")),
+		MaxPoseidonPaddings: types.ArgUint64(hex.DecodeUint64("0x21017")),
+		MaxMemAligns:        types.ArgUint64(hex.DecodeUint64("0x39c29")),
+		MaxArithmetics:      types.ArgUint64(hex.DecodeUint64("0x39c29")),
+		MaxBinaries:         types.ArgUint64(hex.DecodeUint64("0x73852")),
+		MaxSteps:            types.ArgUint64(hex.DecodeUint64("0x73846a")),
+		MaxSHA256Hashes:     types.ArgUint64(hex.DecodeUint64("0x63c")),
+	}
+
+	type testCase struct {
+		name          string
+		prepareParams func(*testing.T, context.Context, *triggerErrors.TriggerErrors, *ethclient.Client, bind.TransactOpts) map[string]interface{}
+		assert        func(*testing.T, *testCase, types.ZKCountersResponse)
+	}
+
+	testCases := []testCase{
+		{
+			name: "transfer works successfully",
+			prepareParams: func(t *testing.T, ctx context.Context, sc *triggerErrors.TriggerErrors, c *ethclient.Client, a bind.TransactOpts) map[string]interface{} {
+				params := map[string]interface{}{
+					"from":  a.From.String(),
+					"to":    common.HexToAddress("0x1").String(),
+					"gas":   hex.EncodeUint64(30000000),
+					"value": hex.EncodeBig(big.NewInt(10000)),
+				}
+
+				return params
+			},
+			assert: func(t *testing.T, tc *testCase, response types.ZKCountersResponse) {
+				assert.LessOrEqual(t, response.CountersUsed.GasUsed, expectedCountersLimits.MaxGasUsed)
+				assert.LessOrEqual(t, response.CountersUsed.UsedKeccakHashes, expectedCountersLimits.MaxKeccakHashes)
+				assert.LessOrEqual(t, response.CountersUsed.UsedPoseidonHashes, expectedCountersLimits.MaxPoseidonHashes)
+				assert.LessOrEqual(t, response.CountersUsed.UsedPoseidonPaddings, expectedCountersLimits.MaxPoseidonPaddings)
+				assert.LessOrEqual(t, response.CountersUsed.UsedMemAligns, expectedCountersLimits.MaxMemAligns)
+				assert.LessOrEqual(t, response.CountersUsed.UsedArithmetics, expectedCountersLimits.MaxArithmetics)
+				assert.LessOrEqual(t, response.CountersUsed.UsedBinaries, expectedCountersLimits.MaxBinaries)
+				assert.LessOrEqual(t, response.CountersUsed.UsedSteps, expectedCountersLimits.MaxSteps)
+				assert.LessOrEqual(t, response.CountersUsed.UsedSHA256Hashes, expectedCountersLimits.MaxSHA256Hashes)
+				assert.Nil(t, response.Revert)
+				assert.Nil(t, response.OOCError)
+			},
+		},
+		{
+			name: "call OOC poseidon",
+			prepareParams: func(t *testing.T, ctx context.Context, sc *triggerErrors.TriggerErrors, c *ethclient.Client, a bind.TransactOpts) map[string]interface{} {
+				a.GasLimit = 30000000
+				a.NoSend = true
+				tx, err := sc.OutOfCountersPoseidon(&a)
+				require.NoError(t, err)
+
+				params := map[string]interface{}{
+					"from":  a.From.String(),
+					"to":    tx.To().String(),
+					"gas":   hex.EncodeUint64(tx.Gas()),
+					"input": hex.EncodeToHex(tx.Data()),
+					"value": hex.EncodeBig(tx.Value()),
+				}
+
+				return params
+			},
+			assert: func(t *testing.T, tc *testCase, response types.ZKCountersResponse) {
+				assert.Greater(t, response.CountersUsed.UsedPoseidonHashes, expectedCountersLimits.MaxPoseidonHashes)
+				assert.Nil(t, response.Revert)
+				assert.Equal(t, "not enough poseidon counters to continue the execution", *response.OOCError)
+			},
+		},
+	}
+
+	// deploy triggerErrors SC
+	_, tx, sc, err := triggerErrors.DeployTriggerErrors(auth, ethClient)
+	require.NoError(t, err)
+
+	err = operations.WaitTxToBeMined(ctx, ethClient, tx, operations.DefaultTimeoutTxToBeMined)
+	require.NoError(t, err)
+
+	// create TX that cause an OOC
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			tc := tc
+			params := tc.prepareParams(t, context.Background(), sc, ethClient, *auth)
+			require.NoError(t, err)
+
+			res, err := client.JSONRPCCall(operations.DefaultL2NetworkURL, "zkevm_estimateCounters", params)
+			require.NoError(t, err)
+			require.Nil(t, res.Error)
+			require.NotNil(t, res.Result)
+
+			var zkCountersResponse types.ZKCountersResponse
+			err = json.Unmarshal(res.Result, &zkCountersResponse)
+			require.NoError(t, err)
+
+			tc.assert(t, &tc, zkCountersResponse)
+
+			assert.Equal(t, expectedCountersLimits.MaxGasUsed, zkCountersResponse.CountersLimits.MaxGasUsed)
+			assert.Equal(t, expectedCountersLimits.MaxKeccakHashes, zkCountersResponse.CountersLimits.MaxKeccakHashes)
+			assert.Equal(t, expectedCountersLimits.MaxPoseidonHashes, zkCountersResponse.CountersLimits.MaxPoseidonHashes)
+			assert.Equal(t, expectedCountersLimits.MaxPoseidonPaddings, zkCountersResponse.CountersLimits.MaxPoseidonPaddings)
+			assert.Equal(t, expectedCountersLimits.MaxMemAligns, zkCountersResponse.CountersLimits.MaxMemAligns)
+			assert.Equal(t, expectedCountersLimits.MaxArithmetics, zkCountersResponse.CountersLimits.MaxArithmetics)
+			assert.Equal(t, expectedCountersLimits.MaxBinaries, zkCountersResponse.CountersLimits.MaxBinaries)
+			assert.Equal(t, expectedCountersLimits.MaxSteps, zkCountersResponse.CountersLimits.MaxSteps)
+			assert.Equal(t, expectedCountersLimits.MaxSHA256Hashes, zkCountersResponse.CountersLimits.MaxSHA256Hashes)
+		})
+	}
+}
+
+func Test_Gas_Bench2(t *testing.T) {
+	if testing.Short() {
+		t.Skip()
+	}
+	ctx := context.Background()
+	setup()
+	defer teardown()
+	ethClient, err := ethclient.Dial(operations.DefaultL2NetworkURL)
+	require.NoError(t, err)
+	auth, err := operations.GetAuth(operations.DefaultSequencerPrivateKey, operations.DefaultL2ChainID)
+	require.NoError(t, err)
+
+	type testCase struct {
+		name          string
+		execute       func(*testing.T, context.Context, *triggerErrors.TriggerErrors, *ethclient.Client, bind.TransactOpts) string
+		expectedError string
+	}
+
+	testCases := []testCase{
+		{
+			name: "estimate gas with given gas limit",
+			execute: func(t *testing.T, ctx context.Context, sc *triggerErrors.TriggerErrors, c *ethclient.Client, a bind.TransactOpts) string {
+				a.GasLimit = 30000000
+				a.NoSend = true
+				tx, err := sc.OutOfCountersPoseidon(&a)
+				require.NoError(t, err)
+
+				t0 := time.Now()
+				_, err = c.EstimateGas(ctx, ethereum.CallMsg{
+					From:     a.From,
+					To:       tx.To(),
+					Gas:      tx.Gas(),
+					GasPrice: tx.GasPrice(),
+					Value:    tx.Value(),
+					Data:     tx.Data(),
+				})
+				log.Infof("EstimateGas time: %v", time.Since(t0))
+				if err != nil {
+					return err.Error()
+				}
+				return ""
+			},
+			expectedError: "",
+		},
+	}
+
+	// deploy triggerErrors SC
+	_, tx, sc, err := triggerErrors.DeployTriggerErrors(auth, ethClient)
+	require.NoError(t, err)
+
+	err = operations.WaitTxToBeMined(ctx, ethClient, tx, operations.DefaultTimeoutTxToBeMined)
+	require.NoError(t, err)
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			testCase.execute(t, context.Background(), sc, ethClient, *auth)
+		})
 	}
 }

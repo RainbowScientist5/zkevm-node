@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"time"
 
+	datastreamerlog "github.com/0xPolygonHermez/zkevm-data-streamer/log"
 	"github.com/0xPolygonHermez/zkevm-node"
 	"github.com/0xPolygonHermez/zkevm-node/aggregator"
 	"github.com/0xPolygonHermez/zkevm-node/config"
@@ -32,8 +33,11 @@ import (
 	"github.com/0xPolygonHermez/zkevm-node/sequencer"
 	"github.com/0xPolygonHermez/zkevm-node/sequencesender"
 	"github.com/0xPolygonHermez/zkevm-node/state"
+	"github.com/0xPolygonHermez/zkevm-node/state/pgstatestorage"
 	"github.com/0xPolygonHermez/zkevm-node/state/runtime/executor"
 	"github.com/0xPolygonHermez/zkevm-node/synchronizer"
+	"github.com/0xPolygonHermez/zkevm-node/synchronizer/common/syncinterfaces"
+	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/jackc/pgx/v4/pgxpool"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/urfave/cli/v2"
@@ -62,6 +66,7 @@ func start(cliCtx *cli.Context) error {
 	if !cliCtx.Bool(config.FlagMigrations) {
 		for _, comp := range components {
 			if comp == SYNCHRONIZER {
+				log.Infof("Running DB migrations host: %s:%s db:%s user:%s", c.State.DB.Host, c.State.DB.Port, c.State.DB.Name, c.State.DB.User)
 				runStateMigrations(c.State.DB)
 			}
 		}
@@ -114,19 +119,14 @@ func start(cliCtx *cli.Context) error {
 		log.Fatal(err)
 	}
 
-	st := newState(cliCtx.Context, c, l2ChainID, []state.ForkIDInterval{}, stateSqlDB, eventLog, needsExecutor, needsStateTree)
-	forkIDIntervals, err := forkIDIntervals(cliCtx.Context, st, etherman, c.NetworkConfig.Genesis.GenesisBlockNum)
-	if err != nil {
-		log.Fatal("error getting forkIDs. Error: ", err)
-	}
-	st.UpdateForkIDIntervalsInMemory(forkIDIntervals)
+	st, currentForkID := newState(cliCtx.Context, c, etherman, l2ChainID, stateSqlDB, eventLog, needsExecutor, needsStateTree, false)
 
-	currentForkID := forkIDIntervals[len(forkIDIntervals)-1].ForkId
-	log.Infof("Fork ID read from POE SC = %v", forkIDIntervals[len(forkIDIntervals)-1].ForkId)
 	c.Aggregator.ChainID = l2ChainID
+	c.Sequencer.StreamServer.ChainID = l2ChainID
+	log.Infof("Chain ID read from POE SC = %v", l2ChainID)
 	// If the aggregator is restarted before the end of the sync process, this currentForkID could be wrong
 	c.Aggregator.ForkId = currentForkID
-	log.Infof("Chain ID read from POE SC = %v", l2ChainID)
+	c.Pool.ForkID = currentForkID
 
 	ethTxManagerStorage, err := ethtxmanager.NewPostgresStorage(c.State.DB)
 	if err != nil {
@@ -158,6 +158,11 @@ func start(cliCtx *cli.Context) error {
 			}
 			go runAggregator(cliCtx.Context, c.Aggregator, etherman, etm, st)
 		case SEQUENCER:
+			c.Sequencer.StreamServer.Log = datastreamerlog.Config{
+				Environment: datastreamerlog.LogEnvironment(c.Log.Environment),
+				Level:       c.Log.Level,
+				Outputs:     c.Log.Outputs,
+			}
 			ev.Component = event.Component_Sequencer
 			ev.Description = "Running sequencer"
 			err := eventLog.LogEvent(cliCtx.Context, ev)
@@ -167,7 +172,7 @@ func start(cliCtx *cli.Context) error {
 			if poolInstance == nil {
 				poolInstance = createPool(c.Pool, c.State.Batch.Constraints, l2ChainID, st, eventLog)
 			}
-			seq := createSequencer(*c, poolInstance, ethTxManagerStorage, st, eventLog)
+			seq := createSequencer(*c, poolInstance, st, etherman, eventLog)
 			go seq.Start(cliCtx.Context)
 		case SEQUENCE_SENDER:
 			ev.Component = event.Component_Sequence_Sender
@@ -200,6 +205,7 @@ func start(cliCtx *cli.Context) error {
 			for _, a := range cliCtx.StringSlice(config.FlagHTTPAPI) {
 				apis[a] = true
 			}
+			st, _ := newState(cliCtx.Context, c, etherman, l2ChainID, stateSqlDB, eventLog, needsExecutor, needsStateTree, true)
 			go runJSONRPCServer(*c, etherman, l2ChainID, poolInstance, st, apis)
 		case SYNCHRONIZER:
 			ev.Component = event.Component_Synchronizer
@@ -211,7 +217,7 @@ func start(cliCtx *cli.Context) error {
 			if poolInstance == nil {
 				poolInstance = createPool(c.Pool, c.State.Batch.Constraints, l2ChainID, st, eventLog)
 			}
-			go runSynchronizer(*c, etherman, etm, st, poolInstance, eventLog)
+			go runSynchronizer(*c, etherman, ethTxManagerStorage, st, poolInstance, eventLog)
 		case ETHTXMANAGER:
 			ev.Component = event.Component_EthTxManager
 			ev.Description = "Running eth tx manager service"
@@ -272,14 +278,19 @@ func runMigrations(c db.Config, name string) {
 }
 
 func newEtherman(c config.Config) (*etherman.Client, error) {
-	etherman, err := etherman.NewClient(c.Etherman, c.NetworkConfig.L1Config)
-	if err != nil {
-		return nil, err
-	}
-	return etherman, nil
+	return etherman.NewClient(c.Etherman, c.NetworkConfig.L1Config)
 }
 
-func runSynchronizer(cfg config.Config, etherman *etherman.Client, ethTxManager *ethtxmanager.Client, st *state.State, pool *pool.Pool, eventLog *event.EventLog) {
+func newL2EthClient(url string) (*ethclient.Client, error) {
+	ethClient, err := ethclient.Dial(url)
+	if err != nil {
+		log.Errorf("error connecting L1 to %s: %+v", url, err)
+		return nil, err
+	}
+	return ethClient, nil
+}
+
+func runSynchronizer(cfg config.Config, etherman *etherman.Client, ethTxManagerStorage *ethtxmanager.PostgresStorage, st *state.State, pool *pool.Pool, eventLog *event.EventLog) {
 	var trustedSequencerURL string
 	var err error
 	if !cfg.IsTrustedSequencer {
@@ -292,14 +303,24 @@ func runSynchronizer(cfg config.Config, etherman *etherman.Client, ethTxManager 
 				log.Fatal("error getting trusted sequencer URI. Error: %v", err)
 			}
 		}
-		log.Debug("trustedSequencerURL ", trustedSequencerURL)
+		log.Info("trustedSequencerURL ", trustedSequencerURL)
+	}
+	var ethClientForL2 *ethclient.Client
+	if trustedSequencerURL != "" {
+		log.Infof("Creating L2 ethereum client %s", trustedSequencerURL)
+		ethClientForL2, err = newL2EthClient(trustedSequencerURL)
+		if err != nil {
+			log.Fatalf("Can't create L2 ethereum client. Err:%w", err)
+		}
+	} else {
+		ethClientForL2 = nil
+		log.Infof("skipping creating L2 ethereum client because URL is empty")
 	}
 	zkEVMClient := client.NewClient(trustedSequencerURL)
-
-	etherManForL1 := []synchronizer.EthermanInterface{}
+	etherManForL1 := []syncinterfaces.EthermanFullInterface{}
 	// If synchronizer are using sequential mode, we only need one etherman client
-	if cfg.Synchronizer.UseParallelModeForL1Synchronization {
-		for i := 0; i < int(cfg.Synchronizer.L1ParallelSynchronization.NumberOfParallelOfEthereumClients); i++ {
+	if cfg.Synchronizer.L1SynchronizationMode == synchronizer.ParallelMode {
+		for i := 0; i < int(cfg.Synchronizer.L1ParallelSynchronization.MaxClients+1); i++ {
 			eth, err := newEtherman(cfg)
 			if err != nil {
 				log.Fatal(err)
@@ -307,9 +328,10 @@ func runSynchronizer(cfg config.Config, etherman *etherman.Client, ethTxManager 
 			etherManForL1 = append(etherManForL1, eth)
 		}
 	}
+	etm := ethtxmanager.New(cfg.EthTxManager, etherman, ethTxManagerStorage, st)
 	sy, err := synchronizer.NewSynchronizer(
-		cfg.IsTrustedSequencer, etherman, etherManForL1, st, pool, ethTxManager,
-		zkEVMClient, eventLog, cfg.NetworkConfig.Genesis, cfg.Synchronizer,
+		cfg.IsTrustedSequencer, etherman, etherManForL1, st, pool, etm,
+		zkEVMClient, ethClientForL2, eventLog, cfg.NetworkConfig.Genesis, cfg.Synchronizer, cfg.Log.Environment == "development",
 	)
 	if err != nil {
 		log.Fatal(err)
@@ -324,6 +346,16 @@ func runJSONRPCServer(c config.Config, etherman *etherman.Client, chainID uint64
 	storage := jsonrpc.NewStorage()
 	c.RPC.MaxCumulativeGasUsed = c.State.Batch.Constraints.MaxCumulativeGasUsed
 	c.RPC.L2Coinbase = c.SequenceSender.L2Coinbase
+	c.RPC.ZKCountersLimits = jsonrpc.ZKCountersLimits{
+		MaxKeccakHashes:     c.State.Batch.Constraints.MaxKeccakHashes,
+		MaxPoseidonHashes:   c.State.Batch.Constraints.MaxPoseidonHashes,
+		MaxPoseidonPaddings: c.State.Batch.Constraints.MaxPoseidonPaddings,
+		MaxMemAligns:        c.State.Batch.Constraints.MaxMemAligns,
+		MaxArithmetics:      c.State.Batch.Constraints.MaxArithmetics,
+		MaxBinaries:         c.State.Batch.Constraints.MaxBinaries,
+		MaxSteps:            c.State.Batch.Constraints.MaxSteps,
+		MaxSHA256Hashes:     c.State.Batch.Constraints.MaxSHA256Hashes,
+	}
 	if !c.IsTrustedSequencer {
 		if c.RPC.SequencerNodeURI == "" {
 			log.Debug("getting trusted sequencer URL from smc")
@@ -353,7 +385,7 @@ func runJSONRPCServer(c config.Config, etherman *etherman.Client, chainID uint64
 	if _, ok := apis[jsonrpc.APIZKEVM]; ok {
 		services = append(services, jsonrpc.Service{
 			Name:    jsonrpc.APIZKEVM,
-			Service: jsonrpc.NewZKEVMEndpoints(c.RPC, st, etherman),
+			Service: jsonrpc.NewZKEVMEndpoints(c.RPC, pool, st, etherman),
 		})
 	}
 
@@ -383,15 +415,10 @@ func runJSONRPCServer(c config.Config, etherman *etherman.Client, chainID uint64
 	}
 }
 
-func createSequencer(cfg config.Config, pool *pool.Pool, etmStorage *ethtxmanager.PostgresStorage, st *state.State, eventLog *event.EventLog) *sequencer.Sequencer {
-	etherman, err := newEtherman(cfg)
-	if err != nil {
-		log.Fatal(err)
-	}
+func createSequencer(cfg config.Config, pool *pool.Pool, st *state.State, etherman *etherman.Client, eventLog *event.EventLog) *sequencer.Sequencer {
+	cfg.Sequencer.L2Coinbase = cfg.SequenceSender.L2Coinbase
 
-	ethTxManager := ethtxmanager.New(cfg.EthTxManager, etherman, etmStorage, st)
-
-	seq, err := sequencer.New(cfg.Sequencer, cfg.State.Batch, pool, st, etherman, ethTxManager, eventLog)
+	seq, err := sequencer.New(cfg.Sequencer, cfg.State.Batch, cfg.Pool, pool, st, etherman, eventLog)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -457,9 +484,7 @@ func waitSignal(cancelFuncs []context.CancelFunc) {
 	}
 }
 
-func newState(ctx context.Context, c *config.Config, l2ChainID uint64, forkIDIntervals []state.ForkIDInterval, sqlDB *pgxpool.Pool, eventLog *event.EventLog, needsExecutor, needsStateTree bool) *state.State {
-	stateDb := state.NewPostgresStorage(sqlDB)
-
+func newState(ctx context.Context, c *config.Config, etherman *etherman.Client, l2ChainID uint64, sqlDB *pgxpool.Pool, eventLog *event.EventLog, needsExecutor, needsStateTree, avoidForkIDInMemory bool) (*state.State, uint64) {
 	// Executor
 	var executorClient executor.ExecutorServiceClient
 	if needsExecutor {
@@ -476,15 +501,42 @@ func newState(ctx context.Context, c *config.Config, l2ChainID uint64, forkIDInt
 	stateCfg := state.Config{
 		MaxCumulativeGasUsed:         c.State.Batch.Constraints.MaxCumulativeGasUsed,
 		ChainID:                      l2ChainID,
-		ForkIDIntervals:              forkIDIntervals,
+		ForkIDIntervals:              []state.ForkIDInterval{},
 		MaxResourceExhaustedAttempts: c.Executor.MaxResourceExhaustedAttempts,
 		WaitOnResourceExhaustion:     c.Executor.WaitOnResourceExhaustion,
 		ForkUpgradeBatchNumber:       c.ForkUpgradeBatchNumber,
 		ForkUpgradeNewForkId:         c.ForkUpgradeNewForkId,
+		MaxLogsCount:                 c.RPC.MaxLogsCount,
+		MaxLogsBlockRange:            c.RPC.MaxLogsBlockRange,
+		MaxNativeBlockHashBlockRange: c.RPC.MaxNativeBlockHashBlockRange,
+		AvoidForkIDInMemory:          avoidForkIDInMemory,
 	}
+	stateDb := pgstatestorage.NewPostgresStorage(stateCfg, sqlDB)
 
-	st := state.NewState(stateCfg, stateDb, executorClient, stateTree, eventLog)
-	return st
+	st := state.NewState(stateCfg, stateDb, executorClient, stateTree, eventLog, nil, nil)
+	// This is to force to build cache, and check that DB is ok before starting the application
+	l1InfoRoot, err := st.GetCurrentL1InfoRoot(ctx, nil)
+	if err != nil {
+		log.Fatal("error getting current L1InfoRoot. Error: ", err)
+	}
+	log.Infof("Starting L1InfoRoot: %v", l1InfoRoot.String())
+
+	l1InfoTreeRecursiveRoot, err := st.GetCurrentL1InfoTreeRecursiveRoot(ctx, nil)
+	if err != nil {
+		log.Fatal("error getting current l1InfoTreeRecursiveRoot. Error: ", err)
+	}
+	log.Infof("Starting l1InfoTreeRecursiveRoot: %v", l1InfoTreeRecursiveRoot.String())
+
+	forkIDIntervals, err := forkIDIntervals(ctx, st, etherman, c.NetworkConfig.Genesis.BlockNumber)
+	if err != nil {
+		log.Fatal("error getting forkIDs. Error: ", err)
+	}
+	st.UpdateForkIDIntervalsInMemory(forkIDIntervals)
+
+	currentForkID := forkIDIntervals[len(forkIDIntervals)-1].ForkId
+	log.Infof("Fork ID read from POE SC = %v", forkIDIntervals[len(forkIDIntervals)-1].ForkId)
+
+	return st, currentForkID
 }
 
 func createPool(cfgPool pool.Config, constraintsCfg state.BatchConstraintsCfg, l2ChainID uint64, st *state.State, eventLog *event.EventLog) *pool.Pool {
@@ -596,7 +648,8 @@ func forkIDIntervals(ctx context.Context, st *state.State, etherman *etherman.Cl
 		if err != nil && !errors.Is(err, state.ErrStateNotSynchronized) {
 			return []state.ForkIDInterval{}, fmt.Errorf("error checking lastL1BlockSynced. Error: %v", err)
 		}
-		if lastBlock != nil {
+		// If lastBlock is below genesisBlock means state.ErrStateNotSynchronized (haven't started yet the sync process, is doing pregenesis sync)
+		if lastBlock != nil && lastBlock.BlockNumber > genesisBlockNumber {
 			log.Info("Getting forkIDs intervals. Please wait...")
 			// Read Fork ID FROM POE SC
 			forkIntervals, err := etherman.GetForks(ctx, genesisBlockNumber, lastBlock.BlockNumber)

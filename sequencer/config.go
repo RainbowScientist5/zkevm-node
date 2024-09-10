@@ -1,101 +1,122 @@
 package sequencer
 
 import (
+	"github.com/0xPolygonHermez/zkevm-data-streamer/log"
 	"github.com/0xPolygonHermez/zkevm-node/config/types"
+	"github.com/ethereum/go-ethereum/common"
 )
 
 // Config represents the configuration of a sequencer
 type Config struct {
-	// WaitPeriodPoolIsEmpty is the time the sequencer waits until
-	// trying to add new txs to the state
-	WaitPeriodPoolIsEmpty types.Duration `mapstructure:"WaitPeriodPoolIsEmpty"`
+	// DeletePoolTxsL1BlockConfirmations is blocks amount after which txs will be deleted from the pool
+	DeletePoolTxsL1BlockConfirmations uint64 `mapstructure:"DeletePoolTxsL1BlockConfirmations"`
 
-	// BlocksAmountForTxsToBeDeleted is blocks amount after which txs will be deleted from the pool
-	BlocksAmountForTxsToBeDeleted uint64 `mapstructure:"BlocksAmountForTxsToBeDeleted"`
+	// DeletePoolTxsCheckInterval is frequency with which txs will be checked for deleting
+	DeletePoolTxsCheckInterval types.Duration `mapstructure:"DeletePoolTxsCheckInterval"`
 
-	// FrequencyToCheckTxsForDelete is frequency with which txs will be checked for deleting
-	FrequencyToCheckTxsForDelete types.Duration `mapstructure:"FrequencyToCheckTxsForDelete"`
+	// TxLifetimeCheckInterval is the time the sequencer waits to check txs lifetime
+	TxLifetimeCheckInterval types.Duration `mapstructure:"TxLifetimeCheckInterval"`
 
-	// TxLifetimeCheckTimeout is the time the sequencer waits to check txs lifetime
-	TxLifetimeCheckTimeout types.Duration `mapstructure:"TxLifetimeCheckTimeout"`
+	// TxLifetimeMax is the time a tx can be in the sequencer/worker memory
+	TxLifetimeMax types.Duration `mapstructure:"TxLifetimeMax"`
 
-	// MaxTxLifetime is the time a tx can be in the sequencer/worker memory
-	MaxTxLifetime types.Duration `mapstructure:"MaxTxLifetime"`
+	// LoadPoolTxsCheckInterval is the time the sequencer waits to check in there are new txs in the pool
+	LoadPoolTxsCheckInterval types.Duration `mapstructure:"LoadPoolTxsCheckInterval"`
+
+	// StateConsistencyCheckInterval is the time the sequencer waits to check if a state inconsistency has happened
+	StateConsistencyCheckInterval types.Duration `mapstructure:"StateConsistencyCheckInterval"`
+
+	// L2Coinbase defines which address is going to receive the fees. It gets the config value from SequenceSender.L2Coinbase
+	L2Coinbase common.Address `mapstructure:"L2Coinbase"`
 
 	// Finalizer's specific config properties
 	Finalizer FinalizerCfg `mapstructure:"Finalizer"`
 
-	// DBManager's specific config properties
-	DBManager DBManagerCfg `mapstructure:"DBManager"`
+	// StreamServerCfg is the config for the stream server
+	StreamServer StreamServerCfg `mapstructure:"StreamServer"`
+}
 
-	// EffectiveGasPrice is the config for the gas price
-	EffectiveGasPrice EffectiveGasPriceCfg `mapstructure:"EffectiveGasPrice"`
+// StreamServerCfg contains the data streamer's configuration properties
+type StreamServerCfg struct {
+	// Port to listen on
+	Port uint16 `mapstructure:"Port"`
+	// Filename of the binary data file
+	Filename string `mapstructure:"Filename"`
+	// Version of the binary data file
+	Version uint8 `mapstructure:"Version"`
+	// ChainID is the chain ID
+	ChainID uint64 `mapstructure:"ChainID"`
+	// Enabled is a flag to enable/disable the data streamer
+	Enabled bool `mapstructure:"Enabled"`
+	// Log is the log configuration
+	Log log.Config `mapstructure:"Log"`
+	// UpgradeEtrogBatchNumber is the batch number of the upgrade etrog
+	UpgradeEtrogBatchNumber uint64 `mapstructure:"UpgradeEtrogBatchNumber"`
+	// WriteTimeout is the TCP write timeout when sending data to a datastream client
+	WriteTimeout types.Duration `mapstructure:"WriteTimeout"`
+	// InactivityTimeout is the timeout to kill an inactive datastream client connection
+	InactivityTimeout types.Duration `mapstructure:"InactivityTimeout"`
+	// InactivityCheckInterval is the time interval to check for datastream client connections that have reached the inactivity timeout to kill them
+	InactivityCheckInterval types.Duration `mapstructure:"InactivityCheckInterval"`
 }
 
 // FinalizerCfg contains the finalizer's configuration properties
 type FinalizerCfg struct {
-	// GERDeadlineTimeout is the time the finalizer waits after receiving closing signal to update Global Exit Root
-	GERDeadlineTimeout types.Duration `mapstructure:"GERDeadlineTimeout"`
+	// ForcedBatchesTimeout is the time the finalizer waits after receiving closing signal to process Forced Batches
+	ForcedBatchesTimeout types.Duration `mapstructure:"ForcedBatchesTimeout"`
 
-	// ForcedBatchDeadlineTimeout is the time the finalizer waits after receiving closing signal to process Forced Batches
-	ForcedBatchDeadlineTimeout types.Duration `mapstructure:"ForcedBatchDeadlineTimeout"`
+	// NewTxsWaitInterval is the time the finalizer sleeps between each iteration, if there are no transactions to be processed
+	NewTxsWaitInterval types.Duration `mapstructure:"NewTxsWaitInterval"`
 
-	// SleepDuration is the time the finalizer sleeps between each iteration, if there are no transactions to be processed
-	SleepDuration types.Duration `mapstructure:"SleepDuration"`
+	// ResourceExhaustedMarginPct is the percentage window of the resource left out for the batch to be closed
+	ResourceExhaustedMarginPct uint32 `mapstructure:"ResourceExhaustedMarginPct"`
 
-	// ResourcePercentageToCloseBatch is the percentage window of the resource left out for the batch to be closed
-	ResourcePercentageToCloseBatch uint32 `mapstructure:"ResourcePercentageToCloseBatch"`
+	// ForcedBatchesL1BlockConfirmations is number of blocks to consider GER final
+	ForcedBatchesL1BlockConfirmations uint64 `mapstructure:"ForcedBatchesL1BlockConfirmations"`
 
-	// GERFinalityNumberOfBlocks is number of blocks to consider GER final
-	GERFinalityNumberOfBlocks uint64 `mapstructure:"GERFinalityNumberOfBlocks"`
+	// L1InfoTreeL1BlockConfirmations is number of blocks to consider L1InfoRoot final
+	L1InfoTreeL1BlockConfirmations uint64 `mapstructure:"L1InfoTreeL1BlockConfirmations"`
 
-	// ClosingSignalsManagerWaitForCheckingL1Timeout is used by the closing signals manager to wait for its operation
-	ClosingSignalsManagerWaitForCheckingL1Timeout types.Duration `mapstructure:"ClosingSignalsManagerWaitForCheckingL1Timeout"`
+	// ForcedBatchesCheckInterval is used by the closing signals manager to wait for its operation
+	ForcedBatchesCheckInterval types.Duration `mapstructure:"ForcedBatchesCheckInterval"`
 
-	// ClosingSignalsManagerWaitForCheckingGER is used by the closing signals manager to wait for its operation
-	ClosingSignalsManagerWaitForCheckingGER types.Duration `mapstructure:"ClosingSignalsManagerWaitForCheckingGER"`
+	// L1InfoTreeCheckInterval is the time interval to check if the L1InfoRoot has been updated
+	L1InfoTreeCheckInterval types.Duration `mapstructure:"L1InfoTreeCheckInterval"`
 
-	// ClosingSignalsManagerWaitForCheckingL1Timeout is used by the closing signals manager to wait for its operation
-	ClosingSignalsManagerWaitForCheckingForcedBatches types.Duration `mapstructure:"ClosingSignalsManagerWaitForCheckingForcedBatches"`
+	// BatchMaxDeltaTimestamp is the resolution of the timestamp used to close a batch
+	BatchMaxDeltaTimestamp types.Duration `mapstructure:"BatchMaxDeltaTimestamp"`
 
-	// ForcedBatchesFinalityNumberOfBlocks is number of blocks to consider GER final
-	ForcedBatchesFinalityNumberOfBlocks uint64 `mapstructure:"ForcedBatchesFinalityNumberOfBlocks"`
+	// L2BlockMaxDeltaTimestamp is the resolution of the timestamp used to close a L2 block
+	L2BlockMaxDeltaTimestamp types.Duration `mapstructure:"L2BlockMaxDeltaTimestamp"`
 
-	// TimestampResolution is the resolution of the timestamp used to close a batch
-	TimestampResolution types.Duration `mapstructure:"TimestampResolution"`
+	// StateRootSyncInterval indicates how often the stateroot generated by the L2 block process will be synchronized with
+	// the stateroot used in the tx-by-tx execution
+	StateRootSyncInterval types.Duration `mapstructure:"StateRootSyncInterval"`
 
-	// StopSequencerOnBatchNum specifies the batch number where the Sequencer will stop to process more transactions and generate new batches. The Sequencer will halt after it closes the batch equal to this number
-	StopSequencerOnBatchNum uint64 `mapstructure:"StopSequencerOnBatchNum"`
+	// FlushIdCheckInterval is the time interval to get storedFlushID value from the executor/hashdb
+	FlushIdCheckInterval types.Duration `mapstructure:"FlushIdCheckInterval"`
 
-	// SequentialReprocessFullBatch indicates if the reprocess of a closed batch (sanity check) must be done in a
+	// HaltOnBatchNumber specifies the batch number where the Sequencer will stop to process more transactions and generate new batches.
+	// The Sequencer will halt after it closes the batch equal to this number
+	HaltOnBatchNumber uint64 `mapstructure:"HaltOnBatchNumber"`
+
+	// SequentialBatchSanityCheck indicates if the reprocess of a closed batch (sanity check) must be done in a
 	// sequential way (instead than in parallel)
-	SequentialReprocessFullBatch bool `mapstructure:"SequentialReprocessFullBatch"`
+	SequentialBatchSanityCheck bool `mapstructure:"SequentialBatchSanityCheck"`
+
+	// SequentialProcessL2Block indicates if the processing of a L2 Block must be done in the same finalizer go func instead
+	// in the processPendingL2Blocks go func
+	SequentialProcessL2Block bool `mapstructure:"SequentialProcessL2Block"`
+
+	// Metrics is the config for the sequencer metrics
+	Metrics MetricsCfg `mapstructure:"Metrics"`
 }
 
-// DBManagerCfg contains the DBManager's configuration properties
-type DBManagerCfg struct {
-	PoolRetrievalInterval    types.Duration `mapstructure:"PoolRetrievalInterval"`
-	L2ReorgRetrievalInterval types.Duration `mapstructure:"L2ReorgRetrievalInterval"`
-}
+// MetricsCfg contains the sequencer metrics configuration properties
+type MetricsCfg struct {
+	// Interval is the interval of time to calculate sequencer metrics
+	Interval types.Duration `mapstructure:"Interval"`
 
-// EffectiveGasPriceCfg contains the configuration properties for the effective gas price
-type EffectiveGasPriceCfg struct {
-	// MaxBreakEvenGasPriceDeviationPercentage is the max allowed deviation percentage BreakEvenGasPrice on re-calculation
-	MaxBreakEvenGasPriceDeviationPercentage uint64 `mapstructure:"MaxBreakEvenGasPriceDeviationPercentage"`
-
-	// L1GasPriceFactor is the percentage of the L1 gas price that will be used as the L2 min gas price
-	L1GasPriceFactor float64 `mapstructure:"L1GasPriceFactor"`
-
-	// ByteGasCost is the gas cost per byte
-	ByteGasCost uint64 `mapstructure:"ByteGasCost"`
-
-	// MarginFactor is the margin factor percentage to be added to the L2 min gas price
-	MarginFactor float64 `mapstructure:"MarginFactor"`
-
-	// Enabled is a flag to enable/disable the effective gas price
-	Enabled bool `mapstructure:"Enabled"`
-
-	// DefaultMinGasPriceAllowed is the default min gas price to suggest
-	// This value is assigned from [Pool].DefaultMinGasPriceAllowed
-	DefaultMinGasPriceAllowed uint64
+	// EnableLog is a flag to enable/disable metrics logs
+	EnableLog bool `mapstructure:"EnableLog"`
 }

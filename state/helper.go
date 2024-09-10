@@ -8,27 +8,30 @@ import (
 
 	"github.com/0xPolygonHermez/zkevm-node/hex"
 	"github.com/0xPolygonHermez/zkevm-node/log"
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/rlp"
+	"golang.org/x/crypto/sha3"
 )
 
 const (
-	forkID5      = 5
 	double       = 2
 	ether155V    = 27
 	etherPre155V = 35
 	// MaxEffectivePercentage is the maximum value that can be used as effective percentage
 	MaxEffectivePercentage = uint8(255)
 	// Decoding constants
-	headerByteLength               uint64 = 1
-	sLength                        uint64 = 32
-	rLength                        uint64 = 32
-	vLength                        uint64 = 1
-	c0                             uint64 = 192 // 192 is c0. This value is defined by the rlp protocol
-	ff                             uint64 = 255 // max value of rlp header
-	shortRlp                       uint64 = 55  // length of the short rlp codification
-	f7                             uint64 = 247 // 192 + 55 = c0 + shortRlp
-	efficiencyPercentageByteLength uint64 = 1
+	headerByteLength uint64 = 1
+	sLength          uint64 = 32
+	rLength          uint64 = 32
+	vLength          uint64 = 1
+	c0               uint64 = 192 // 192 is c0. This value is defined by the rlp protocol
+	ff               uint64 = 255 // max value of rlp header
+	shortRlp         uint64 = 55  // length of the short rlp codification
+	f7               uint64 = 247 // 192 + 55 = c0 + shortRlp
+
+	// EfficiencyPercentageByteLength is the length of the effective percentage in bytes
+	EfficiencyPercentageByteLength uint64 = 1
 )
 
 // EncodeTransactions RLP encodes the given transactions
@@ -36,13 +39,13 @@ func EncodeTransactions(txs []types.Transaction, effectivePercentages []uint8, f
 	var batchL2Data []byte
 
 	for i, tx := range txs {
-		txData, err := prepareRPLTxData(tx)
+		txData, err := prepareRLPTxData(tx)
 		if err != nil {
 			return nil, err
 		}
 		batchL2Data = append(batchL2Data, txData...)
 
-		if forkID >= forkID5 {
+		if forkID >= FORKID_DRAGONFRUIT {
 			effectivePercentageAsHex, err := hex.DecodeHex(fmt.Sprintf("%x", effectivePercentages[i]))
 			if err != nil {
 				return nil, err
@@ -54,12 +57,11 @@ func EncodeTransactions(txs []types.Transaction, effectivePercentages []uint8, f
 	return batchL2Data, nil
 }
 
-func prepareRPLTxData(tx types.Transaction) ([]byte, error) {
+func prepareRLPTxData(tx types.Transaction) ([]byte, error) {
 	v, r, s := tx.RawSignatureValues()
 	sign := 1 - (v.Uint64() & 1)
 
 	nonce, gasPrice, gas, to, value, data, chainID := tx.Nonce(), tx.GasPrice(), tx.Gas(), tx.To(), tx.Value(), tx.Data(), tx.ChainId()
-	log.Debug(nonce, " ", gasPrice, " ", gas, " ", to, " ", value, " ", len(data), " ", chainID, " ")
 
 	rlpFieldsToEncode := []interface{}{
 		nonce,
@@ -97,7 +99,7 @@ func EncodeTransactionsWithoutEffectivePercentage(txs []types.Transaction) ([]by
 	var batchL2Data []byte
 
 	for _, tx := range txs {
-		txData, err := prepareRPLTxData(tx)
+		txData, err := prepareRLPTxData(tx)
 		if err != nil {
 			return nil, err
 		}
@@ -152,8 +154,8 @@ func EncodeUnsignedTransaction(tx types.Transaction, chainID uint64, forcedNonce
 	newSPadded := fmt.Sprintf("%064s", s.Text(hex.Base))
 	newVPadded := fmt.Sprintf("%02s", newV.Text(hex.Base))
 	effectivePercentageAsHex := fmt.Sprintf("%x", MaxEffectivePercentage)
-	// Only add EffectiveGasprice if forkID is equal or higher than 5
-	if forkID < forkID5 {
+	// Only add EffectiveGasprice if forkID is equal or higher than DRAGONFRUIT_FORKID
+	if forkID < FORKID_DRAGONFRUIT {
 		effectivePercentageAsHex = ""
 	}
 	txData, err := hex.DecodeString(hex.EncodeToString(txCodedRlp) + newRPadded + newSPadded + newVPadded + effectivePercentageAsHex)
@@ -185,7 +187,7 @@ func DecodeTxs(txsData []byte, forkID uint64) ([]types.Transaction, []byte, []ui
 			log.Debugf("error num < c0 : %d, %d", num, c0)
 			return []types.Transaction{}, txsData, []uint8{}, ErrInvalidData
 		}
-		length := uint64(num - c0)
+		length := num - c0
 		if length > shortRlp { // If rlp is bigger than length 55
 			// n is the length of the rlp data without the header (1 byte) for example "0xf7"
 			if (pos + 1 + num - f7) > txDataLength {
@@ -206,8 +208,8 @@ func DecodeTxs(txsData []byte, forkID uint64) ([]types.Transaction, []byte, []ui
 
 		endPos := pos + length + rLength + sLength + vLength + headerByteLength
 
-		if forkID >= forkID5 {
-			endPos += efficiencyPercentageByteLength
+		if forkID >= FORKID_DRAGONFRUIT {
+			endPos += EfficiencyPercentageByteLength
 		}
 
 		if endPos > txDataLength {
@@ -235,9 +237,9 @@ func DecodeTxs(txsData []byte, forkID uint64) ([]types.Transaction, []byte, []ui
 		sData := txsData[dataStart+rLength : dataStart+rLength+sLength]
 		vData := txsData[dataStart+rLength+sLength : dataStart+rLength+sLength+vLength]
 
-		if forkID >= forkID5 {
+		if forkID >= FORKID_DRAGONFRUIT {
 			efficiencyPercentage := txsData[dataStart+rLength+sLength+vLength : endPos]
-			efficiencyPercentages = append(efficiencyPercentages, uint8(efficiencyPercentage[0]))
+			efficiencyPercentages = append(efficiencyPercentages, efficiencyPercentage[0])
 		}
 
 		pos = endPos
@@ -276,19 +278,24 @@ func DecodeTx(encodedTx string) (*types.Transaction, error) {
 	return tx, nil
 }
 
-func generateReceipt(blockNumber *big.Int, processedTx *ProcessTransactionResponse) *types.Receipt {
+// GenerateReceipt generates a receipt from a processed transaction
+func GenerateReceipt(blockNumber *big.Int, processedTx *ProcessTransactionResponse, txIndex uint, forkID uint64) *types.Receipt {
 	receipt := &types.Receipt{
-		Type:              uint8(processedTx.Type),
-		PostState:         processedTx.StateRoot.Bytes(),
-		CumulativeGasUsed: processedTx.GasUsed,
-		BlockNumber:       blockNumber,
-		GasUsed:           processedTx.GasUsed,
-		TxHash:            processedTx.Tx.Hash(),
-		TransactionIndex:  0,
-		ContractAddress:   processedTx.CreateAddress,
-		Logs:              processedTx.Logs,
+		Type:             uint8(processedTx.Type),
+		BlockNumber:      blockNumber,
+		GasUsed:          processedTx.GasUsed,
+		TxHash:           processedTx.Tx.Hash(),
+		TransactionIndex: txIndex,
+		ContractAddress:  processedTx.CreateAddress,
+		Logs:             processedTx.Logs,
 	}
-
+	if forkID <= FORKID_ETROG {
+		receipt.PostState = processedTx.StateRoot.Bytes()
+		receipt.CumulativeGasUsed = processedTx.GasUsed
+	} else {
+		receipt.PostState = []byte{}
+		receipt.CumulativeGasUsed = processedTx.CumulativeGasUsed
+	}
 	if processedTx.EffectiveGasPrice != "" {
 		effectiveGasPrice, ok := big.NewInt(0).SetString(processedTx.EffectiveGasPrice, 0)
 		if !ok {
@@ -306,36 +313,17 @@ func generateReceipt(blockNumber *big.Int, processedTx *ProcessTransactionRespon
 	for i := 0; i < len(receipt.Logs); i++ {
 		receipt.Logs[i].TxHash = processedTx.Tx.Hash()
 	}
-	if processedTx.RomError == nil {
-		receipt.Status = types.ReceiptStatusSuccessful
+	if forkID <= FORKID_ETROG {
+		if processedTx.RomError == nil {
+			receipt.Status = types.ReceiptStatusSuccessful
+		} else {
+			receipt.Status = types.ReceiptStatusFailed
+		}
 	} else {
-		receipt.Status = types.ReceiptStatusFailed
+		receipt.Status = uint64(processedTx.Status)
 	}
 
 	return receipt
-}
-
-func toPostgresInterval(duration string) (string, error) {
-	unit := duration[len(duration)-1]
-	var pgUnit string
-
-	switch unit {
-	case 's':
-		pgUnit = "second"
-	case 'm':
-		pgUnit = "minute"
-	case 'h':
-		pgUnit = "hour"
-	default:
-		return "", ErrUnsupportedDuration
-	}
-
-	isMoreThanOne := duration[0] != '1' || len(duration) > 2 //nolint:gomnd
-	if isMoreThanOne {
-		pgUnit = pgUnit + "s"
-	}
-
-	return fmt.Sprintf("%s %s", duration[:len(duration)-1], pgUnit), nil
 }
 
 // IsPreEIP155Tx checks if the tx is a tx that has a chainID as zero and
@@ -362,4 +350,16 @@ func CheckLogOrder(logs []*types.Log) bool {
 		}
 	}
 	return true
+}
+
+// Ptr returns a pointer for any instance
+func Ptr[T any](v T) *T {
+	return &v
+}
+
+// HashByteArray returns the hash of the given byte array
+func HashByteArray(data []byte) common.Hash {
+	sha := sha3.NewLegacyKeccak256()
+	sha.Write(data)
+	return common.BytesToHash(sha.Sum(nil))
 }

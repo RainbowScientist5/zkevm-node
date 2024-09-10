@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/0xPolygonHermez/zkevm-node/config/types"
-	"github.com/0xPolygonHermez/zkevm-node/state"
 	"github.com/0xPolygonHermez/zkevm-node/test/dbutils"
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
@@ -47,7 +46,7 @@ func TestTxGetMined(t *testing.T) {
 
 	currentNonce := uint64(1)
 	etherman.
-		On("CurrentNonce", ctx, from).
+		On("PendingNonce", ctx, from).
 		Return(currentNonce, nil).
 		Once()
 
@@ -56,6 +55,8 @@ func TestTxGetMined(t *testing.T) {
 		On("EstimateGas", ctx, from, to, value, data).
 		Return(estimatedGas, nil).
 		Once()
+
+	gasOffset := uint64(1)
 
 	suggestedGasPrice := big.NewInt(1)
 	etherman.
@@ -67,7 +68,7 @@ func TestTxGetMined(t *testing.T) {
 		Nonce:    currentNonce,
 		To:       to,
 		Value:    value,
-		Gas:      estimatedGas,
+		Gas:      estimatedGas + gasOffset,
 		GasPrice: suggestedGasPrice,
 		Data:     data,
 	})
@@ -116,15 +117,7 @@ func TestTxGetMined(t *testing.T) {
 		Return("", nil).
 		Once()
 
-	block := &state.Block{
-		BlockNumber: blockNumber.Uint64(),
-	}
-	st.
-		On("GetLastBlock", ctx, nil).
-		Return(block, nil).
-		Once()
-
-	err = ethTxManagerClient.Add(ctx, owner, id, from, to, value, data, nil)
+	err = ethTxManagerClient.Add(ctx, owner, id, from, to, value, data, gasOffset, nil)
 	require.NoError(t, err)
 
 	go ethTxManagerClient.Start()
@@ -163,7 +156,7 @@ func TestTxGetMinedAfterReviewed(t *testing.T) {
 	// Add
 	currentNonce := uint64(1)
 	etherman.
-		On("CurrentNonce", ctx, from).
+		On("PendingNonce", ctx, from).
 		Return(currentNonce, nil).
 		Once()
 
@@ -172,6 +165,8 @@ func TestTxGetMinedAfterReviewed(t *testing.T) {
 		On("EstimateGas", ctx, from, to, value, data).
 		Return(firstGasEstimation, nil).
 		Once()
+
+	gasOffset := uint64(2)
 
 	firstGasPriceSuggestion := big.NewInt(1)
 	etherman.
@@ -184,7 +179,7 @@ func TestTxGetMinedAfterReviewed(t *testing.T) {
 		Nonce:    currentNonce,
 		To:       to,
 		Value:    value,
-		Gas:      firstGasEstimation,
+		Gas:      firstGasEstimation + gasOffset,
 		GasPrice: firstGasPriceSuggestion,
 		Data:     data,
 	})
@@ -226,7 +221,7 @@ func TestTxGetMinedAfterReviewed(t *testing.T) {
 		Nonce:    currentNonce,
 		To:       to,
 		Value:    value,
-		Gas:      secondGasEstimation,
+		Gas:      secondGasEstimation + gasOffset,
 		GasPrice: secondGasPriceSuggestion,
 		Data:     data,
 	})
@@ -259,14 +254,6 @@ func TestTxGetMinedAfterReviewed(t *testing.T) {
 		Return(receipt, nil).
 		Once()
 
-	block := &state.Block{
-		BlockNumber: blockNumber.Uint64(),
-	}
-	st.
-		On("GetLastBlock", ctx, nil).
-		Return(block, nil).
-		Once()
-
 	// Build result
 	etherman.
 		On("GetTx", ctx, firstSignedTx.Hash()).
@@ -293,7 +280,7 @@ func TestTxGetMinedAfterReviewed(t *testing.T) {
 		Return("", nil).
 		Once()
 
-	err = ethTxManagerClient.Add(ctx, owner, id, from, to, value, data, nil)
+	err = ethTxManagerClient.Add(ctx, owner, id, from, to, value, data, gasOffset, nil)
 	require.NoError(t, err)
 
 	go ethTxManagerClient.Start()
@@ -327,7 +314,7 @@ func TestTxGetMinedAfterConfirmedAndReorged(t *testing.T) {
 	// Add
 	currentNonce := uint64(1)
 	etherman.
-		On("CurrentNonce", ctx, from).
+		On("PendingNonce", ctx, from).
 		Return(currentNonce, nil).
 		Once()
 
@@ -336,6 +323,8 @@ func TestTxGetMinedAfterConfirmedAndReorged(t *testing.T) {
 		On("EstimateGas", ctx, from, to, value, data).
 		Return(estimatedGas, nil).
 		Once()
+
+	gasOffset := uint64(1)
 
 	suggestedGasPrice := big.NewInt(1)
 	etherman.
@@ -348,7 +337,7 @@ func TestTxGetMinedAfterConfirmedAndReorged(t *testing.T) {
 		Nonce:    currentNonce,
 		To:       to,
 		Value:    value,
-		Gas:      estimatedGas,
+		Gas:      estimatedGas + gasOffset,
 		GasPrice: suggestedGasPrice,
 		Data:     data,
 	})
@@ -377,16 +366,8 @@ func TestTxGetMinedAfterConfirmedAndReorged(t *testing.T) {
 	}
 	etherman.
 		On("GetTxReceipt", ctx, signedTx.Hash()).
-		Return(receipt, nil).
-		Once()
-
-	block := &state.Block{
-		BlockNumber: blockNumber.Uint64(),
-	}
-	st.
-		On("GetLastBlock", ctx, nil).
 		Run(func(args mock.Arguments) { ethTxManagerClient.Stop() }). // stops the management cycle to avoid problems with mocks
-		Return(block, nil).
+		Return(receipt, nil).
 		Once()
 
 	// Build Result 1
@@ -427,12 +408,8 @@ func TestTxGetMinedAfterConfirmedAndReorged(t *testing.T) {
 	// Monitoring Cycle 3
 	etherman.
 		On("CheckTxWasMined", ctx, signedTx.Hash()).
-		Return(true, receipt, nil).
-		Once()
-	st.
-		On("GetLastBlock", ctx, nil).
 		Run(func(args mock.Arguments) { ethTxManagerClient.Stop() }). // stops the management cycle to avoid problems with mocks
-		Return(block, nil).
+		Return(true, receipt, nil).
 		Once()
 
 	// Build Result 3
@@ -449,7 +426,7 @@ func TestTxGetMinedAfterConfirmedAndReorged(t *testing.T) {
 		Return("", nil).
 		Once()
 
-	err = ethTxManagerClient.Add(ctx, owner, id, from, to, value, data, nil)
+	err = ethTxManagerClient.Add(ctx, owner, id, from, to, value, data, gasOffset, nil)
 	require.NoError(t, err)
 
 	go ethTxManagerClient.Start()
@@ -515,7 +492,7 @@ func TestExecutionReverted(t *testing.T) {
 	// Add
 	currentNonce := uint64(1)
 	etherman.
-		On("CurrentNonce", ctx, from).
+		On("PendingNonce", ctx, from).
 		Return(currentNonce, nil).
 		Once()
 
@@ -524,6 +501,8 @@ func TestExecutionReverted(t *testing.T) {
 		On("EstimateGas", ctx, from, to, value, data).
 		Return(firstGasEstimation, nil).
 		Once()
+
+	gasOffset := uint64(1)
 
 	firstGasPriceSuggestion := big.NewInt(1)
 	etherman.
@@ -536,7 +515,7 @@ func TestExecutionReverted(t *testing.T) {
 		Nonce:    currentNonce,
 		To:       to,
 		Value:    value,
-		Gas:      firstGasEstimation,
+		Gas:      firstGasEstimation + gasOffset,
 		GasPrice: firstGasPriceSuggestion,
 		Data:     data,
 	})
@@ -585,7 +564,7 @@ func TestExecutionReverted(t *testing.T) {
 
 	currentNonce = uint64(2)
 	etherman.
-		On("CurrentNonce", ctx, from).
+		On("PendingNonce", ctx, from).
 		Return(currentNonce, nil).
 		Once()
 	secondGasEstimation := uint64(2)
@@ -603,7 +582,7 @@ func TestExecutionReverted(t *testing.T) {
 		Nonce:    currentNonce,
 		To:       to,
 		Value:    value,
-		Gas:      secondGasEstimation,
+		Gas:      secondGasEstimation + gasOffset,
 		GasPrice: secondGasPriceSuggestion,
 		Data:     data,
 	})
@@ -635,14 +614,6 @@ func TestExecutionReverted(t *testing.T) {
 		Return(receipt, nil).
 		Once()
 
-	block := &state.Block{
-		BlockNumber: blockNumber.Uint64(),
-	}
-	st.
-		On("GetLastBlock", ctx, nil).
-		Return(block, nil).
-		Once()
-
 	// Build result
 	etherman.
 		On("GetTx", ctx, firstSignedTx.Hash()).
@@ -669,7 +640,7 @@ func TestExecutionReverted(t *testing.T) {
 		Return("", nil).
 		Once()
 
-	err = ethTxManagerClient.Add(ctx, owner, id, from, to, value, data, nil)
+	err = ethTxManagerClient.Add(ctx, owner, id, from, to, value, data, gasOffset, nil)
 	require.NoError(t, err)
 
 	go ethTxManagerClient.Start()
@@ -743,7 +714,7 @@ func TestGasPriceMarginAndLimit(t *testing.T) {
 
 			currentNonce := uint64(1)
 			etherman.
-				On("CurrentNonce", ctx, from).
+				On("PendingNonce", ctx, from).
 				Return(currentNonce, nil).
 				Once()
 
@@ -753,7 +724,9 @@ func TestGasPriceMarginAndLimit(t *testing.T) {
 				Return(estimatedGas, nil).
 				Once()
 
-			suggestedGasPrice := big.NewInt(int64(tc.suggestedGasPrice))
+			gasOffset := uint64(1)
+
+			suggestedGasPrice := big.NewInt(tc.suggestedGasPrice)
 			etherman.
 				On("SuggestedGasPrice", ctx).
 				Return(suggestedGasPrice, nil).
@@ -761,7 +734,7 @@ func TestGasPriceMarginAndLimit(t *testing.T) {
 
 			expectedSuggestedGasPrice := big.NewInt(tc.expectedGasPrice)
 
-			err = ethTxManagerClient.Add(ctx, owner, id, from, to, value, data, nil)
+			err = ethTxManagerClient.Add(ctx, owner, id, from, to, value, data, gasOffset, nil)
 			require.NoError(t, err)
 
 			monitoredTx, err := storage.Get(ctx, owner, id, nil)
@@ -769,4 +742,198 @@ func TestGasPriceMarginAndLimit(t *testing.T) {
 			require.Equal(t, monitoredTx.gasPrice.Cmp(expectedSuggestedGasPrice), 0, fmt.Sprintf("expected gas price %v, found %v", expectedSuggestedGasPrice.String(), monitoredTx.gasPrice.String()))
 		})
 	}
+}
+
+func TestGasOffset(t *testing.T) {
+	type testCase struct {
+		name         string
+		estimatedGas uint64
+		gasOffset    uint64
+		expectedGas  uint64
+	}
+
+	testCases := []testCase{
+		{
+			name:         "no gas offset",
+			estimatedGas: 1,
+			gasOffset:    0,
+			expectedGas:  1,
+		},
+		{
+			name:         "gas offset",
+			estimatedGas: 1,
+			gasOffset:    1,
+			expectedGas:  2,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			dbCfg := dbutils.NewStateConfigFromEnv()
+			require.NoError(t, dbutils.InitOrResetState(dbCfg))
+
+			etherman := newEthermanMock(t)
+			st := newStateMock(t)
+			storage, err := NewPostgresStorage(dbCfg)
+			require.NoError(t, err)
+
+			var cfg = Config{
+				FrequencyToMonitorTxs: defaultEthTxmanagerConfigForTests.FrequencyToMonitorTxs,
+				WaitTxToBeMined:       defaultEthTxmanagerConfigForTests.WaitTxToBeMined,
+			}
+
+			ethTxManagerClient := New(cfg, etherman, storage, st)
+
+			owner := "owner"
+			id := "unique_id"
+			from := common.HexToAddress("")
+			var to *common.Address
+			var value *big.Int
+			var data []byte = nil
+
+			ctx := context.Background()
+
+			currentNonce := uint64(1)
+			etherman.
+				On("PendingNonce", ctx, from).
+				Return(currentNonce, nil).
+				Once()
+
+			etherman.
+				On("EstimateGas", ctx, from, to, value, data).
+				Return(tc.estimatedGas, nil).
+				Once()
+
+			suggestedGasPrice := big.NewInt(int64(10))
+			etherman.
+				On("SuggestedGasPrice", ctx).
+				Return(suggestedGasPrice, nil).
+				Once()
+
+			err = ethTxManagerClient.Add(ctx, owner, id, from, to, value, data, tc.gasOffset, nil)
+			require.NoError(t, err)
+
+			monitoredTx, err := storage.Get(ctx, owner, id, nil)
+			require.NoError(t, err)
+			require.Equal(t, monitoredTx.gas, tc.estimatedGas)
+			require.Equal(t, monitoredTx.gasOffset, tc.gasOffset)
+
+			tx := monitoredTx.Tx()
+			require.Equal(t, tx.Gas(), tc.expectedGas)
+		})
+	}
+}
+
+func TestFailedToEstimateTxWithForcedGasGetMined(t *testing.T) {
+	dbCfg := dbutils.NewStateConfigFromEnv()
+	require.NoError(t, dbutils.InitOrResetState(dbCfg))
+
+	etherman := newEthermanMock(t)
+	st := newStateMock(t)
+	storage, err := NewPostgresStorage(dbCfg)
+	require.NoError(t, err)
+
+	// set forced gas
+	defaultEthTxmanagerConfigForTests.ForcedGas = 300000000
+
+	ethTxManagerClient := New(defaultEthTxmanagerConfigForTests, etherman, storage, st)
+
+	owner := "owner"
+	id := "unique_id"
+	from := common.HexToAddress("")
+	var to *common.Address
+	var value *big.Int
+	var data []byte = nil
+
+	ctx := context.Background()
+
+	currentNonce := uint64(1)
+	etherman.
+		On("PendingNonce", ctx, from).
+		Return(currentNonce, nil).
+		Once()
+
+	// forces the estimate gas to fail
+	etherman.
+		On("EstimateGas", ctx, from, to, value, data).
+		Return(uint64(0), fmt.Errorf("failed to estimate gas")).
+		Once()
+
+	// set estimated gas as the config ForcedGas
+	estimatedGas := defaultEthTxmanagerConfigForTests.ForcedGas
+	gasOffset := uint64(1)
+
+	suggestedGasPrice := big.NewInt(1)
+	etherman.
+		On("SuggestedGasPrice", ctx).
+		Return(suggestedGasPrice, nil).
+		Once()
+
+	signedTx := ethTypes.NewTx(&ethTypes.LegacyTx{
+		Nonce:    currentNonce,
+		To:       to,
+		Value:    value,
+		Gas:      estimatedGas + gasOffset,
+		GasPrice: suggestedGasPrice,
+		Data:     data,
+	})
+	etherman.
+		On("SignTx", ctx, from, mock.IsType(&ethTypes.Transaction{})).
+		Return(signedTx, nil).
+		Once()
+
+	etherman.
+		On("GetTx", ctx, signedTx.Hash()).
+		Return(nil, false, ethereum.NotFound).
+		Once()
+	etherman.
+		On("GetTx", ctx, signedTx.Hash()).
+		Return(signedTx, false, nil).
+		Once()
+
+	etherman.
+		On("SendTx", ctx, signedTx).
+		Return(nil).
+		Once()
+
+	etherman.
+		On("WaitTxToBeMined", ctx, signedTx, mock.IsType(time.Second)).
+		Return(true, nil).
+		Once()
+
+	blockNumber := big.NewInt(1)
+
+	receipt := &ethTypes.Receipt{
+		BlockNumber: blockNumber,
+		Status:      ethTypes.ReceiptStatusSuccessful,
+	}
+	etherman.
+		On("GetTxReceipt", ctx, signedTx.Hash()).
+		Return(receipt, nil).
+		Once()
+	etherman.
+		On("GetTxReceipt", ctx, signedTx.Hash()).
+		Run(func(args mock.Arguments) { ethTxManagerClient.Stop() }). // stops the management cycle to avoid problems with mocks
+		Return(receipt, nil).
+		Once()
+
+	etherman.
+		On("GetRevertMessage", ctx, signedTx).
+		Return("", nil).
+		Once()
+
+	err = ethTxManagerClient.Add(ctx, owner, id, from, to, value, data, gasOffset, nil)
+	require.NoError(t, err)
+
+	go ethTxManagerClient.Start()
+
+	time.Sleep(time.Second)
+	result, err := ethTxManagerClient.Result(ctx, owner, id, nil)
+	require.NoError(t, err)
+	require.Equal(t, id, result.ID)
+	require.Equal(t, MonitoredTxStatusConfirmed, result.Status)
+	require.Equal(t, 1, len(result.Txs))
+	require.Equal(t, signedTx, result.Txs[signedTx.Hash()].Tx)
+	require.Equal(t, receipt, result.Txs[signedTx.Hash()].Receipt)
+	require.Equal(t, "", result.Txs[signedTx.Hash()].RevertMessage)
 }

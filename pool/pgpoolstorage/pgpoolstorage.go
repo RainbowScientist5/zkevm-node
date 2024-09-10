@@ -70,14 +70,16 @@ func (p *PostgresPoolStorage) AddTx(ctx context.Context, tx pool.Transaction) er
 			used_arithmetics,
 			used_binaries,
 			used_steps,
+			used_sha256_hashes,
 			received_at,
 			from_address,
 			is_wip,
 			ip,
-			failed_reason
+			failed_reason,
+			reserved_zkcounters
 		) 
 		VALUES 
-			($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, NULL)
+			($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, NULL, $20)
 			ON CONFLICT (hash) DO UPDATE SET 
 			encoded = $2,
 			decoded = $3,
@@ -92,11 +94,13 @@ func (p *PostgresPoolStorage) AddTx(ctx context.Context, tx pool.Transaction) er
 			used_arithmetics = $12,
 			used_binaries = $13,
 			used_steps = $14,
-			received_at = $15,
-			from_address = $16,
-			is_wip = $17,
-			ip = $18,
-			failed_reason = NULL
+			used_sha256_hashes = $15,
+			received_at = $16,
+			from_address = $17,
+			is_wip = $18,
+			ip = $19,
+			failed_reason = NULL,
+			reserved_zkcounters = $20
 	`
 
 	// Get FromAddress from the JSON data
@@ -113,18 +117,20 @@ func (p *PostgresPoolStorage) AddTx(ctx context.Context, tx pool.Transaction) er
 		tx.Status,
 		gasPrice,
 		nonce,
-		tx.CumulativeGasUsed,
-		tx.UsedKeccakHashes,
-		tx.UsedPoseidonHashes,
-		tx.UsedPoseidonPaddings,
-		tx.UsedMemAligns,
-		tx.UsedArithmetics,
-		tx.UsedBinaries,
-		tx.UsedSteps,
+		tx.GasUsed,
+		tx.KeccakHashes,
+		tx.PoseidonHashes,
+		tx.PoseidonPaddings,
+		tx.MemAligns,
+		tx.Arithmetics,
+		tx.Binaries,
+		tx.Steps,
+		tx.Sha256Hashes_V2,
 		tx.ReceivedAt,
 		fromAddress,
 		tx.IsWIP,
-		tx.IP); err != nil {
+		tx.IP,
+		tx.ReservedZKCounters); err != nil {
 		return err
 	}
 	return nil
@@ -141,11 +147,11 @@ func (p *PostgresPoolStorage) GetTxsByStatus(ctx context.Context, status pool.Tx
 	)
 	if limit == 0 {
 		sql = `SELECT encoded, status, received_at, is_wip, ip, cumulative_gas_used, used_keccak_hashes, used_poseidon_hashes, used_poseidon_paddings, used_mem_aligns,
-				used_arithmetics, used_binaries, used_steps, failed_reason FROM pool.transaction WHERE status = $1 ORDER BY gas_price DESC`
+				used_arithmetics, used_binaries, used_steps, used_sha256_hashes, failed_reason, reserved_zkcounters FROM pool.transaction WHERE status = $1 ORDER BY gas_price DESC`
 		rows, err = p.db.Query(ctx, sql, status.String())
 	} else {
 		sql = `SELECT encoded, status, received_at, is_wip, ip, cumulative_gas_used, used_keccak_hashes, used_poseidon_hashes, used_poseidon_paddings, used_mem_aligns,
-				used_arithmetics, used_binaries, used_steps, failed_reason FROM pool.transaction WHERE status = $1 ORDER BY gas_price DESC LIMIT $2`
+				used_arithmetics, used_binaries, used_steps, used_sha256_hashes, failed_reason, reserved_zkcounters FROM pool.transaction WHERE status = $1 ORDER BY gas_price DESC LIMIT $2`
 		rows, err = p.db.Query(ctx, sql, status.String(), limit)
 	}
 	if err != nil {
@@ -174,7 +180,7 @@ func (p *PostgresPoolStorage) GetNonWIPPendingTxs(ctx context.Context) ([]pool.T
 	)
 
 	sql = `SELECT encoded, status, received_at, is_wip, ip, cumulative_gas_used, used_keccak_hashes, used_poseidon_hashes, used_poseidon_paddings, used_mem_aligns,
-		used_arithmetics, used_binaries, used_steps, failed_reason FROM pool.transaction WHERE is_wip IS FALSE and status = $1`
+		used_arithmetics, used_binaries, used_steps, used_sha256_hashes, failed_reason, reserved_zkcounters FROM pool.transaction WHERE is_wip IS FALSE and status = $1`
 	rows, err = p.db.Query(ctx, sql, pool.TxStatusPending)
 
 	if err != nil {
@@ -229,10 +235,12 @@ func (p *PostgresPoolStorage) GetTxs(ctx context.Context, filterStatus pool.TxSt
 			used_arithmetics,
 			used_binaries,
 			used_steps,
+			used_sha256_hashes,
 			received_at,
 			nonce,
 			is_wip,
-			ip
+			ip,
+			reserved_zkcounters
 		FROM
 			pool.transaction p1
 		WHERE 
@@ -257,10 +265,12 @@ func (p *PostgresPoolStorage) GetTxs(ctx context.Context, filterStatus pool.TxSt
 				used_arithmetics,
 				used_binaries,
 				used_steps,
+				used_sha256_hashes,
 				received_at,
 				nonce,
 				is_wip,
-				ip
+				ip,
+				reserved_zkcounters
 			FROM
 				pool.transaction p1
 			WHERE
@@ -279,9 +289,10 @@ func (p *PostgresPoolStorage) GetTxs(ctx context.Context, filterStatus pool.TxSt
 		receivedAt          time.Time
 		cumulativeGasUsed   uint64
 		usedKeccakHashes, usedPoseidonHashes, usedPoseidonPaddings,
-		usedMemAligns, usedArithmetics, usedBinaries, usedSteps uint32
-		nonce uint64
-		isWIP bool
+		usedMemAligns, usedArithmetics, usedBinaries, usedSteps, usedSHA256Hashes uint32
+		nonce              uint64
+		isWIP              bool
+		reservedZKCounters state.ZKCounters
 	)
 
 	args := []interface{}{filterStatus, minGasPrice, limit}
@@ -306,10 +317,12 @@ func (p *PostgresPoolStorage) GetTxs(ctx context.Context, filterStatus pool.TxSt
 			&usedArithmetics,
 			&usedBinaries,
 			&usedSteps,
+			&usedSHA256Hashes,
 			&receivedAt,
 			&nonce,
 			&isWIP,
 			&ip,
+			&reservedZKCounters,
 		)
 
 		if err != nil {
@@ -327,17 +340,19 @@ func (p *PostgresPoolStorage) GetTxs(ctx context.Context, filterStatus pool.TxSt
 		tx.Status = pool.TxStatus(status)
 		tx.ReceivedAt = receivedAt
 		tx.ZKCounters = state.ZKCounters{
-			CumulativeGasUsed:    cumulativeGasUsed,
-			UsedKeccakHashes:     usedKeccakHashes,
-			UsedPoseidonHashes:   usedPoseidonHashes,
-			UsedPoseidonPaddings: usedPoseidonPaddings,
-			UsedMemAligns:        usedMemAligns,
-			UsedArithmetics:      usedArithmetics,
-			UsedBinaries:         usedBinaries,
-			UsedSteps:            usedSteps,
+			GasUsed:          cumulativeGasUsed,
+			KeccakHashes:     usedKeccakHashes,
+			PoseidonHashes:   usedPoseidonHashes,
+			PoseidonPaddings: usedPoseidonPaddings,
+			MemAligns:        usedMemAligns,
+			Arithmetics:      usedArithmetics,
+			Binaries:         usedBinaries,
+			Steps:            usedSteps,
+			Sha256Hashes_V2:  usedSHA256Hashes,
 		}
 		tx.IsWIP = isWIP
 		tx.IP = ip
+		tx.ReservedZKCounters = reservedZKCounters
 		txs = append(txs, tx)
 	}
 
@@ -410,6 +425,16 @@ func (p *PostgresPoolStorage) DeleteTransactionsByHashes(ctx context.Context, ha
 
 	query := "DELETE FROM pool.transaction WHERE hash = ANY ($1)"
 	if _, err := p.db.Exec(ctx, query, hh); err != nil {
+		return err
+	}
+	return nil
+}
+
+// DeleteFailedTransactionsOlderThan deletes all failed transactions older than the given date
+func (p *PostgresPoolStorage) DeleteFailedTransactionsOlderThan(ctx context.Context, date time.Time) error {
+	sql := `DELETE FROM pool.transaction WHERE status = 'failed' and received_at < $1`
+
+	if _, err := p.db.Exec(ctx, sql, date); err != nil {
 		return err
 	}
 	return nil
@@ -494,7 +519,7 @@ func (p *PostgresPoolStorage) IsTxPending(ctx context.Context, hash common.Hash)
 // GetTxsByFromAndNonce get all the transactions from the pool with the same from and nonce
 func (p *PostgresPoolStorage) GetTxsByFromAndNonce(ctx context.Context, from common.Address, nonce uint64) ([]pool.Transaction, error) {
 	sql := `SELECT encoded, status, received_at, is_wip, ip, cumulative_gas_used, used_keccak_hashes, used_poseidon_hashes, 
-				   used_poseidon_paddings, used_mem_aligns,	used_arithmetics, used_binaries, used_steps, failed_reason
+				   used_poseidon_paddings, used_mem_aligns,	used_arithmetics, used_binaries, used_steps, used_sha256_hashes, failed_reason, reserved_zkcounters
 	          FROM pool.transaction
 			 WHERE from_address = $1
 			   AND nonce = $2`
@@ -572,8 +597,8 @@ func (p *PostgresPoolStorage) GetNonce(ctx context.Context, address common.Addre
 	return *nonce, nil
 }
 
-// GetTxByHash gets a transaction in the pool by its hash
-func (p *PostgresPoolStorage) GetTxByHash(ctx context.Context, hash common.Hash) (*pool.Transaction, error) {
+// GetTransactionByHash gets a transaction in the pool by its hash
+func (p *PostgresPoolStorage) GetTransactionByHash(ctx context.Context, hash common.Hash) (*pool.Transaction, error) {
 	var (
 		encoded, status, ip string
 		receivedAt          time.Time
@@ -583,6 +608,45 @@ func (p *PostgresPoolStorage) GetTxByHash(ctx context.Context, hash common.Hash)
 	sql := `SELECT encoded, status, received_at, is_wip, ip
 	          FROM pool.transaction
 			 WHERE hash = $1`
+	err := p.db.QueryRow(ctx, sql, hash.String()).Scan(&encoded, &status, &receivedAt, &isWIP, &ip)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, pool.ErrNotFound
+	} else if err != nil {
+		return nil, err
+	}
+
+	b, err := hex.DecodeHex(encoded)
+	if err != nil {
+		return nil, err
+	}
+
+	tx := new(types.Transaction)
+	if err := tx.UnmarshalBinary(b); err != nil {
+		return nil, err
+	}
+
+	poolTx := &pool.Transaction{
+		ReceivedAt:  receivedAt,
+		Status:      pool.TxStatus(status),
+		Transaction: *tx,
+		IsWIP:       isWIP,
+		IP:          ip,
+	}
+
+	return poolTx, nil
+}
+
+// GetTransactionByL2Hash gets a transaction in the pool by its l2 hash
+func (p *PostgresPoolStorage) GetTransactionByL2Hash(ctx context.Context, hash common.Hash) (*pool.Transaction, error) {
+	var (
+		encoded, status, ip string
+		receivedAt          time.Time
+		isWIP               bool
+	)
+
+	sql := `SELECT encoded, status, received_at, is_wip, ip
+	          FROM pool.transaction
+			 WHERE l2_hash = $1`
 	err := p.db.QueryRow(ctx, sql, hash.String()).Scan(&encoded, &status, &receivedAt, &isWIP, &ip)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, pool.ErrNotFound
@@ -624,11 +688,13 @@ func scanTx(rows pgx.Rows) (*pool.Transaction, error) {
 		usedArithmetics      uint32
 		usedBinaries         uint32
 		usedSteps            uint32
+		usedSHA256Hashes     uint32
 		failedReason         *string
+		reservedZKCounters   state.ZKCounters
 	)
 
 	if err := rows.Scan(&encoded, &status, &receivedAt, &isWIP, &ip, &cumulativeGasUsed, &usedKeccakHashes, &usedPoseidonHashes,
-		&usedPoseidonPaddings, &usedMemAligns, &usedArithmetics, &usedBinaries, &usedSteps, &failedReason); err != nil {
+		&usedPoseidonPaddings, &usedMemAligns, &usedArithmetics, &usedBinaries, &usedSteps, &usedSHA256Hashes, &failedReason, &reservedZKCounters); err != nil {
 		return nil, err
 	}
 
@@ -647,15 +713,17 @@ func scanTx(rows pgx.Rows) (*pool.Transaction, error) {
 	tx.ReceivedAt = receivedAt
 	tx.IsWIP = isWIP
 	tx.IP = ip
-	tx.ZKCounters.CumulativeGasUsed = cumulativeGasUsed
-	tx.ZKCounters.UsedKeccakHashes = usedKeccakHashes
-	tx.ZKCounters.UsedPoseidonHashes = usedPoseidonHashes
-	tx.ZKCounters.UsedPoseidonPaddings = usedPoseidonPaddings
-	tx.ZKCounters.UsedMemAligns = usedMemAligns
-	tx.ZKCounters.UsedArithmetics = usedArithmetics
-	tx.ZKCounters.UsedBinaries = usedBinaries
-	tx.ZKCounters.UsedSteps = usedSteps
+	tx.ZKCounters.GasUsed = cumulativeGasUsed
+	tx.ZKCounters.KeccakHashes = usedKeccakHashes
+	tx.ZKCounters.PoseidonHashes = usedPoseidonHashes
+	tx.ZKCounters.PoseidonPaddings = usedPoseidonPaddings
+	tx.ZKCounters.MemAligns = usedMemAligns
+	tx.ZKCounters.Arithmetics = usedArithmetics
+	tx.ZKCounters.Binaries = usedBinaries
+	tx.ZKCounters.Steps = usedSteps
+	tx.ZKCounters.Sha256Hashes_V2 = usedSHA256Hashes
 	tx.FailedReason = failedReason
+	tx.ReservedZKCounters = reservedZKCounters
 
 	return tx, nil
 }
@@ -670,21 +738,22 @@ func (p *PostgresPoolStorage) DeleteTransactionByHash(ctx context.Context, hash 
 }
 
 // GetTxZkCountersByHash gets a transaction zkcounters by its hash
-func (p *PostgresPoolStorage) GetTxZkCountersByHash(ctx context.Context, hash common.Hash) (*state.ZKCounters, error) {
-	var zkCounters state.ZKCounters
+func (p *PostgresPoolStorage) GetTxZkCountersByHash(ctx context.Context, hash common.Hash) (*state.ZKCounters, *state.ZKCounters, error) {
+	var usedZKCounters state.ZKCounters
+	var reservedZKCounters state.ZKCounters
 
 	sql := `SELECT cumulative_gas_used, used_keccak_hashes, used_poseidon_hashes, used_poseidon_paddings, used_mem_aligns,
-			used_arithmetics, used_binaries, used_steps FROM pool.transaction WHERE hash = $1`
-	err := p.db.QueryRow(ctx, sql, hash.String()).Scan(&zkCounters.CumulativeGasUsed, &zkCounters.UsedKeccakHashes,
-		&zkCounters.UsedPoseidonHashes, &zkCounters.UsedPoseidonPaddings,
-		&zkCounters.UsedMemAligns, &zkCounters.UsedArithmetics, &zkCounters.UsedBinaries, &zkCounters.UsedSteps)
+			used_arithmetics, used_binaries, used_steps, used_sha256_hashes, reserved_zkcounters FROM pool.transaction WHERE hash = $1`
+	err := p.db.QueryRow(ctx, sql, hash.String()).Scan(&usedZKCounters.GasUsed, &usedZKCounters.KeccakHashes,
+		&usedZKCounters.PoseidonHashes, &usedZKCounters.PoseidonPaddings,
+		&usedZKCounters.MemAligns, &usedZKCounters.Arithmetics, &usedZKCounters.Binaries, &usedZKCounters.Steps, &usedZKCounters.Sha256Hashes_V2, &reservedZKCounters)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, pool.ErrNotFound
+		return nil, nil, pool.ErrNotFound
 	} else if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
-	return &zkCounters, nil
+	return &usedZKCounters, &reservedZKCounters, nil
 }
 
 // MarkWIPTxsAsPending updates WIP status to non WIP
@@ -731,4 +800,24 @@ func (p *PostgresPoolStorage) GetAllAddressesBlocked(ctx context.Context) ([]com
 	}
 
 	return addrs, nil
+}
+
+// GetEarliestProcessedTx gets the earliest processed tx from the pool. Mainly used for cleanup
+func (p *PostgresPoolStorage) GetEarliestProcessedTx(ctx context.Context) (common.Hash, error) {
+	const getEarliestProcessedTxnFromTxnPool = `SELECT hash
+	FROM pool.transaction
+	WHERE
+		status = 'selected'
+	ORDER BY received_at ASC
+	LIMIT 1`
+
+	var txnHash string
+	err := p.db.QueryRow(ctx, getEarliestProcessedTxnFromTxnPool).Scan(&txnHash)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return common.Hash{}, nil
+	} else if err != nil {
+		return common.Hash{}, err
+	}
+
+	return common.HexToHash(txnHash), nil
 }

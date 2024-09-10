@@ -12,6 +12,9 @@ type Config struct {
 	WaitPeriodSendSequence types.Duration `mapstructure:"WaitPeriodSendSequence"`
 	// LastBatchVirtualizationTimeMaxWaitPeriod is time since sequences should be sent
 	LastBatchVirtualizationTimeMaxWaitPeriod types.Duration `mapstructure:"LastBatchVirtualizationTimeMaxWaitPeriod"`
+	// L1BlockTimestampMargin is the time difference (margin) that must exists between last L1 block and last L2 block in the sequence before
+	// to send the sequence to L1. If the difference is lower than this value then sequencesender will wait until the difference is equal or greater
+	L1BlockTimestampMargin types.Duration `mapstructure:"L1BlockTimestampMargin"`
 	// MaxTxSizeForL1 is the maximum size a single transaction can have. This field has
 	// non-trivial consequences: larger transactions than 128KB are significantly harder and
 	// more expensive to propagate; larger transactions also take more resources
@@ -27,4 +30,17 @@ type Config struct {
 	PrivateKey types.KeystoreFileConfig `mapstructure:"PrivateKey"`
 	// Batch number where there is a forkid change (fork upgrade)
 	ForkUpgradeBatchNumber uint64
+	// GasOffset is the amount of gas to be added to the gas estimation in order
+	// to provide an amount that is higher than the estimated one. This is used
+	// to avoid the TX getting reverted in case something has changed in the network
+	// state after the estimation which can cause the TX to require more gas to be
+	// executed.
+	//
+	// ex:
+	// gas estimation: 1000
+	// gas offset: 100
+	// final gas: 1100
+	GasOffset uint64 `mapstructure:"GasOffset"`
+	// SequenceL1BlockConfirmations is number of blocks to consider a sequence sent to L1 as final
+	SequenceL1BlockConfirmations uint64 `mapstructure:"SequenceL1BlockConfirmations"`
 }

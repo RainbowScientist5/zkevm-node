@@ -1,6 +1,8 @@
 package state
 
 import (
+	"fmt"
+
 	"github.com/0xPolygonHermez/zkevm-node/config/types"
 	"github.com/0xPolygonHermez/zkevm-node/db"
 )
@@ -33,6 +35,22 @@ type Config struct {
 
 	// Configuration for the batch constraints
 	Batch BatchConfig `mapstructure:"Batch"`
+
+	// MaxLogsCount is a configuration to set the max number of logs that can be returned
+	// in a single call to the state, if zero it means no limit
+	MaxLogsCount uint64
+
+	// MaxLogsBlockRange is a configuration to set the max range for block number when querying TXs
+	// logs in a single call to the state, if zero it means no limit
+	MaxLogsBlockRange uint64
+
+	// MaxNativeBlockHashBlockRange is a configuration to set the max range for block number when querying
+	// native block hashes in a single call to the state, if zero it means no limit
+	MaxNativeBlockHashBlockRange uint64
+
+	// AvoidForkIDInMemory is a configuration that forces the ForkID information to be loaded
+	// from the DB every time it's needed
+	AvoidForkIDInMemory bool
 }
 
 // BatchConfig represents the configuration of the batch constraints
@@ -52,16 +70,45 @@ type BatchConstraintsCfg struct {
 	MaxArithmetics       uint32 `mapstructure:"MaxArithmetics"`
 	MaxBinaries          uint32 `mapstructure:"MaxBinaries"`
 	MaxSteps             uint32 `mapstructure:"MaxSteps"`
+	MaxSHA256Hashes      uint32 `mapstructure:"MaxSHA256Hashes"`
 }
 
-// IsWithinConstraints checks if the counters are within the batch constraints
-func (c BatchConstraintsCfg) IsWithinConstraints(counters ZKCounters) bool {
-	return counters.CumulativeGasUsed <= c.MaxCumulativeGasUsed &&
-		counters.UsedKeccakHashes <= c.MaxKeccakHashes &&
-		counters.UsedPoseidonHashes <= c.MaxPoseidonHashes &&
-		counters.UsedPoseidonPaddings <= c.MaxPoseidonPaddings &&
-		counters.UsedMemAligns <= c.MaxMemAligns &&
-		counters.UsedArithmetics <= c.MaxArithmetics &&
-		counters.UsedBinaries <= c.MaxBinaries &&
-		counters.UsedSteps <= c.MaxSteps
+// CheckNodeLevelOOC checks if the counters are within the batch constraints
+func (c BatchConstraintsCfg) CheckNodeLevelOOC(counters ZKCounters) error {
+	oocList := ""
+
+	if counters.GasUsed > c.MaxCumulativeGasUsed {
+		oocList += "GasUsed, "
+	}
+	if counters.KeccakHashes > c.MaxKeccakHashes {
+		oocList += "KeccakHashes, "
+	}
+	if counters.PoseidonHashes > c.MaxPoseidonHashes {
+		oocList += "PoseidonHashes, "
+	}
+	if counters.PoseidonPaddings > c.MaxPoseidonPaddings {
+		oocList += "PoseidonPaddings, "
+	}
+	if counters.MemAligns > c.MaxMemAligns {
+		oocList += "MemAligns, "
+	}
+	if counters.Arithmetics > c.MaxArithmetics {
+		oocList += "Arithmetics, "
+	}
+	if counters.Binaries > c.MaxBinaries {
+		oocList += "Binaries, "
+	}
+	if counters.Steps > c.MaxSteps {
+		oocList += "Steps, "
+	}
+	if counters.Sha256Hashes_V2 > c.MaxSHA256Hashes {
+		oocList += "Sha256Hashes, "
+	}
+
+	if oocList != "" {
+		oocList = oocList[:len(oocList)-2] // Remove last comma and blank space
+		return fmt.Errorf("out of counters at node level (%s)", oocList)
+	}
+
+	return nil
 }

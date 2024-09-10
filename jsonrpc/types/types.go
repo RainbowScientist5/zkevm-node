@@ -63,7 +63,7 @@ func (b *ArgBytes) UnmarshalText(input []byte) error {
 		return nil
 	}
 	aux := make([]byte, len(hh))
-	copy(aux[:], hh[:])
+	copy(aux, hh)
 	*b = aux
 	return nil
 }
@@ -241,13 +241,13 @@ func (args *TxArgs) ToTransaction(ctx context.Context, st StateInterface, maxCum
 type Block struct {
 	ParentHash      common.Hash         `json:"parentHash"`
 	Sha3Uncles      common.Hash         `json:"sha3Uncles"`
-	Miner           common.Address      `json:"miner"`
+	Miner           *common.Address     `json:"miner"`
 	StateRoot       common.Hash         `json:"stateRoot"`
 	TxRoot          common.Hash         `json:"transactionsRoot"`
 	ReceiptsRoot    common.Hash         `json:"receiptsRoot"`
 	LogsBloom       types.Bloom         `json:"logsBloom"`
 	Difficulty      ArgUint64           `json:"difficulty"`
-	TotalDifficulty ArgUint64           `json:"totalDifficulty"`
+	TotalDifficulty *ArgUint64          `json:"totalDifficulty"`
 	Size            ArgUint64           `json:"size"`
 	Number          ArgUint64           `json:"number"`
 	GasLimit        ArgUint64           `json:"gasLimit"`
@@ -255,18 +255,20 @@ type Block struct {
 	Timestamp       ArgUint64           `json:"timestamp"`
 	ExtraData       ArgBytes            `json:"extraData"`
 	MixHash         common.Hash         `json:"mixHash"`
-	Nonce           ArgBytes            `json:"nonce"`
-	Hash            common.Hash         `json:"hash"`
+	Nonce           *ArgBytes           `json:"nonce"`
+	Hash            *common.Hash        `json:"hash"`
 	Transactions    []TransactionOrHash `json:"transactions"`
 	Uncles          []common.Hash       `json:"uncles"`
+	GlobalExitRoot  *common.Hash        `json:"globalExitRoot,omitempty"`
+	BlockInfoRoot   *common.Hash        `json:"blockInfoRoot,omitempty"`
 }
 
 // NewBlock creates a Block instance
-func NewBlock(b *types.Block, receipts []types.Receipt, fullTx, includeReceipts bool) (*Block, error) {
+func NewBlock(ctx context.Context, st StateInterface, hash *common.Hash, b *state.L2Block, receipts []types.Receipt, fullTx, includeReceipts bool, includeExtraInfo *bool, dbTx pgx.Tx) (*Block, error) {
 	h := b.Header()
 
 	n := big.NewInt(0).SetUint64(h.Nonce.Uint64())
-	nonce := common.LeftPadBytes(n.Bytes(), 8) //nolint:gomnd
+	nonce := ArgBytes(common.LeftPadBytes(n.Bytes(), 8)) //nolint:gomnd
 
 	var difficulty uint64
 	if h.Difficulty != nil {
@@ -275,16 +277,18 @@ func NewBlock(b *types.Block, receipts []types.Receipt, fullTx, includeReceipts 
 		difficulty = uint64(0)
 	}
 
+	totalDifficult := ArgUint64(difficulty)
+
 	res := &Block{
 		ParentHash:      h.ParentHash,
 		Sha3Uncles:      h.UncleHash,
-		Miner:           h.Coinbase,
+		Miner:           &h.Coinbase,
 		StateRoot:       h.Root,
 		TxRoot:          h.TxHash,
 		ReceiptsRoot:    h.ReceiptHash,
 		LogsBloom:       h.Bloom,
 		Difficulty:      ArgUint64(difficulty),
-		TotalDifficulty: ArgUint64(difficulty),
+		TotalDifficulty: &totalDifficult,
 		Size:            ArgUint64(b.Size()),
 		Number:          ArgUint64(b.Number().Uint64()),
 		GasLimit:        ArgUint64(h.GasLimit),
@@ -292,10 +296,15 @@ func NewBlock(b *types.Block, receipts []types.Receipt, fullTx, includeReceipts 
 		Timestamp:       ArgUint64(h.Time),
 		ExtraData:       ArgBytes(h.Extra),
 		MixHash:         h.MixDigest,
-		Nonce:           nonce,
-		Hash:            b.Hash(),
+		Nonce:           &nonce,
+		Hash:            hash,
 		Transactions:    []TransactionOrHash{},
 		Uncles:          []common.Hash{},
+	}
+
+	if includeExtraInfo != nil && *includeExtraInfo {
+		res.GlobalExitRoot = &h.GlobalExitRoot
+		res.BlockInfoRoot = &h.BlockInfoRoot
 	}
 
 	receiptsMap := make(map[common.Hash]types.Receipt, len(receipts))
@@ -310,7 +319,16 @@ func NewBlock(b *types.Block, receipts []types.Receipt, fullTx, includeReceipts 
 				receiptPtr = &receipt
 			}
 
-			rpcTx, err := NewTransaction(*tx, receiptPtr, includeReceipts)
+			var l2Hash *common.Hash
+			if includeExtraInfo != nil && *includeExtraInfo {
+				l2h, err := st.GetL2TxHashByTxHash(ctx, tx.Hash(), dbTx)
+				if err != nil {
+					return nil, err
+				}
+				l2Hash = l2h
+			}
+
+			rpcTx, err := NewTransaction(*tx, receiptPtr, includeReceipts, l2Hash)
 			if err != nil {
 				return nil, err
 			}
@@ -355,9 +373,9 @@ type Batch struct {
 }
 
 // NewBatch creates a Batch instance
-func NewBatch(batch *state.Batch, virtualBatch *state.VirtualBatch, verifiedBatch *state.VerifiedBatch, blocks []types.Block, receipts []types.Receipt, fullTx, includeReceipts bool, ger *state.GlobalExitRoot) (*Batch, error) {
+func NewBatch(ctx context.Context, st StateInterface, batch *state.Batch, virtualBatch *state.VirtualBatch, verifiedBatch *state.VerifiedBatch, blocks []state.L2Block, receipts []types.Receipt, fullTx, includeReceipts bool, ger *state.GlobalExitRoot, dbTx pgx.Tx) (*Batch, error) {
 	batchL2Data := batch.BatchL2Data
-	closed := batch.StateRoot.String() != state.ZeroHash.String() || batch.BatchNumber == 0
+	closed := !batch.WIP
 	res := &Batch{
 		Number:          ArgUint64(batch.BatchNumber),
 		GlobalExitRoot:  batch.GlobalExitRoot,
@@ -371,6 +389,7 @@ func NewBatch(batch *state.Batch, virtualBatch *state.VirtualBatch, verifiedBatc
 		BatchL2Data:     ArgBytes(batchL2Data),
 		Closed:          closed,
 	}
+
 	if batch.ForcedBatchNum != nil {
 		fb := ArgUint64(*batch.ForcedBatchNum)
 		res.ForcedBatchNumber = &fb
@@ -395,7 +414,11 @@ func NewBatch(batch *state.Batch, virtualBatch *state.VirtualBatch, verifiedBatc
 			if receipt, found := receiptsMap[tx.Hash()]; found {
 				receiptPtr = &receipt
 			}
-			rpcTx, err := NewTransaction(tx, receiptPtr, includeReceipts)
+			l2Hash, err := st.GetL2TxHashByTxHash(ctx, tx.Hash(), dbTx)
+			if err != nil {
+				return nil, err
+			}
+			rpcTx, err := NewTransaction(tx, receiptPtr, includeReceipts, l2Hash)
 			if err != nil {
 				return nil, err
 			}
@@ -409,7 +432,7 @@ func NewBatch(batch *state.Batch, virtualBatch *state.VirtualBatch, verifiedBatc
 	for _, b := range blocks {
 		b := b
 		if fullTx {
-			block, err := NewBlock(&b, nil, false, false)
+			block, err := NewBlock(ctx, st, state.Ptr(b.Hash()), &b, nil, false, false, state.Ptr(true), dbTx)
 			if err != nil {
 				return nil, err
 			}
@@ -514,6 +537,7 @@ type Transaction struct {
 	ChainID     ArgBig          `json:"chainId"`
 	Type        ArgUint64       `json:"type"`
 	Receipt     *Receipt        `json:"receipt,omitempty"`
+	L2Hash      *common.Hash    `json:"l2Hash,omitempty"`
 }
 
 // CoreTx returns a geth core type Transaction
@@ -535,10 +559,9 @@ func (t Transaction) CoreTx() *types.Transaction {
 func NewTransaction(
 	tx types.Transaction,
 	receipt *types.Receipt,
-	includeReceipt bool,
+	includeReceipt bool, l2Hash *common.Hash,
 ) (*Transaction, error) {
 	v, r, s := tx.RawSignatureValues()
-
 	from, _ := state.GetSender(tx)
 
 	res := &Transaction{
@@ -555,6 +578,7 @@ func NewTransaction(
 		From:     from,
 		ChainID:  ArgBig(*tx.ChainId()),
 		Type:     ArgUint64(tx.Type()),
+		L2Hash:   l2Hash,
 	}
 
 	if receipt != nil {
@@ -563,7 +587,7 @@ func NewTransaction(
 		res.BlockHash = &receipt.BlockHash
 		ti := ArgUint64(receipt.TransactionIndex)
 		res.TxIndex = &ti
-		rpcReceipt, err := NewReceipt(tx, receipt)
+		rpcReceipt, err := NewReceipt(tx, receipt, l2Hash)
 		if err != nil {
 			return nil, err
 		}
@@ -577,7 +601,7 @@ func NewTransaction(
 
 // Receipt structure
 type Receipt struct {
-	Root              common.Hash     `json:"root"`
+	Root              *common.Hash    `json:"root,omitempty"`
 	CumulativeGasUsed ArgUint64       `json:"cumulativeGasUsed"`
 	LogsBloom         types.Bloom     `json:"logsBloom"`
 	Logs              []*types.Log    `json:"logs"`
@@ -592,10 +616,11 @@ type Receipt struct {
 	ContractAddress   *common.Address `json:"contractAddress"`
 	Type              ArgUint64       `json:"type"`
 	EffectiveGasPrice *ArgBig         `json:"effectiveGasPrice,omitempty"`
+	TxL2Hash          *common.Hash    `json:"transactionL2Hash,omitempty"`
 }
 
 // NewReceipt creates a new Receipt instance
-func NewReceipt(tx types.Transaction, r *types.Receipt) (Receipt, error) {
+func NewReceipt(tx types.Transaction, r *types.Receipt, l2Hash *common.Hash) (Receipt, error) {
 	to := tx.To()
 	logs := r.Logs
 	if logs == nil {
@@ -618,7 +643,6 @@ func NewReceipt(tx types.Transaction, r *types.Receipt) (Receipt, error) {
 		return Receipt{}, err
 	}
 	receipt := Receipt{
-		Root:              common.BytesToHash(r.PostState),
 		CumulativeGasUsed: ArgUint64(r.CumulativeGasUsed),
 		LogsBloom:         r.Bloom,
 		Logs:              logs,
@@ -632,11 +656,18 @@ func NewReceipt(tx types.Transaction, r *types.Receipt) (Receipt, error) {
 		FromAddr:          from,
 		ToAddr:            to,
 		Type:              ArgUint64(r.Type),
+		TxL2Hash:          l2Hash,
 	}
+	if len(r.PostState) > 0 {
+		root := common.BytesToHash(r.PostState)
+		receipt.Root = &root
+	}
+
 	if r.EffectiveGasPrice != nil {
 		egp := ArgBig(*r.EffectiveGasPrice)
 		receipt.EffectiveGasPrice = &egp
 	}
+
 	return receipt, nil
 }
 
@@ -668,14 +699,77 @@ func NewLog(l types.Log) Log {
 	}
 }
 
-// ToBatchNumArg converts a big.Int into a batch number rpc parameter
-func ToBatchNumArg(number *big.Int) string {
-	if number == nil {
-		return Latest
+// ExitRoots structure
+type ExitRoots struct {
+	BlockNumber     ArgUint64   `json:"blockNumber"`
+	Timestamp       ArgUint64   `json:"timestamp"`
+	MainnetExitRoot common.Hash `json:"mainnetExitRoot"`
+	RollupExitRoot  common.Hash `json:"rollupExitRoot"`
+}
+
+// ZKCounters counters for the tx
+type ZKCounters struct {
+	GasUsed              ArgUint64 `json:"gasUsed"`
+	UsedKeccakHashes     ArgUint64 `json:"usedKeccakHashes"`
+	UsedPoseidonHashes   ArgUint64 `json:"usedPoseidonHashes"`
+	UsedPoseidonPaddings ArgUint64 `json:"usedPoseidonPaddings"`
+	UsedMemAligns        ArgUint64 `json:"usedMemAligns"`
+	UsedArithmetics      ArgUint64 `json:"usedArithmetics"`
+	UsedBinaries         ArgUint64 `json:"usedBinaries"`
+	UsedSteps            ArgUint64 `json:"usedSteps"`
+	UsedSHA256Hashes     ArgUint64 `json:"usedSHA256Hashes"`
+}
+
+// ZKCountersLimits used to return the zk counter limits to the user
+type ZKCountersLimits struct {
+	MaxGasUsed          ArgUint64 `json:"maxGasUsed"`
+	MaxKeccakHashes     ArgUint64 `json:"maxKeccakHashes"`
+	MaxPoseidonHashes   ArgUint64 `json:"maxPoseidonHashes"`
+	MaxPoseidonPaddings ArgUint64 `json:"maxPoseidonPaddings"`
+	MaxMemAligns        ArgUint64 `json:"maxMemAligns"`
+	MaxArithmetics      ArgUint64 `json:"maxArithmetics"`
+	MaxBinaries         ArgUint64 `json:"maxBinaries"`
+	MaxSteps            ArgUint64 `json:"maxSteps"`
+	MaxSHA256Hashes     ArgUint64 `json:"maxSHA256Hashes"`
+}
+
+// RevertInfo contains the reverted message and data when a tx
+// is reverted during the zk counter estimation
+type RevertInfo struct {
+	Message string    `json:"message"`
+	Data    *ArgBytes `json:"data,omitempty"`
+}
+
+// ZKCountersResponse returned when counters are estimated
+type ZKCountersResponse struct {
+	CountersUsed   ZKCounters       `json:"countersUsed"`
+	CountersLimits ZKCountersLimits `json:"countersLimit"`
+	Revert         *RevertInfo      `json:"revert,omitempty"`
+	OOCError       *string          `json:"oocError,omitempty"`
+}
+
+// NewZKCountersResponse creates an instance of ZKCounters to be returned
+// by the RPC to the caller
+func NewZKCountersResponse(zkCounters state.ZKCounters, limits ZKCountersLimits, revert *RevertInfo, oocErr error) ZKCountersResponse {
+	var oocErrMsg *string
+	if oocErr != nil {
+		s := oocErr.Error()
+		oocErrMsg = &s
 	}
-	pending := big.NewInt(-1)
-	if number.Cmp(pending) == 0 {
-		return Pending
+	return ZKCountersResponse{
+		CountersUsed: ZKCounters{
+			GasUsed:              ArgUint64(zkCounters.GasUsed),
+			UsedKeccakHashes:     ArgUint64(zkCounters.KeccakHashes),
+			UsedPoseidonHashes:   ArgUint64(zkCounters.PoseidonHashes),
+			UsedPoseidonPaddings: ArgUint64(zkCounters.PoseidonPaddings),
+			UsedMemAligns:        ArgUint64(zkCounters.MemAligns),
+			UsedArithmetics:      ArgUint64(zkCounters.Arithmetics),
+			UsedBinaries:         ArgUint64(zkCounters.Binaries),
+			UsedSteps:            ArgUint64(zkCounters.Steps),
+			UsedSHA256Hashes:     ArgUint64(zkCounters.Sha256Hashes_V2),
+		},
+		CountersLimits: limits,
+		Revert:         revert,
+		OOCError:       oocErrMsg,
 	}
-	return hex.EncodeBig(number)
 }

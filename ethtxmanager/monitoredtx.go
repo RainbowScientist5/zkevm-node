@@ -73,6 +73,9 @@ type monitoredTx struct {
 	// tx gas
 	gas uint64
 
+	// tx gas offset
+	gasOffset uint64
+
 	// tx gas price
 	gasPrice *big.Int
 
@@ -103,7 +106,7 @@ func (mTx monitoredTx) Tx() *types.Transaction {
 		Nonce:    mTx.nonce,
 		Value:    mTx.value,
 		Data:     mTx.data,
-		Gas:      mTx.gas,
+		Gas:      mTx.gas + mTx.gasOffset,
 		GasPrice: mTx.gasPrice,
 	})
 
@@ -179,9 +182,10 @@ func (mTx *monitoredTx) blockNumberU64Ptr() *uint64 {
 
 // MonitoredTxResult represents the result of a execution of a monitored tx
 type MonitoredTxResult struct {
-	ID     string
-	Status MonitoredTxStatus
-	Txs    map[common.Hash]TxResult
+	ID          string
+	Status      MonitoredTxStatus
+	BlockNumber *big.Int
+	Txs         map[common.Hash]TxResult
 }
 
 // TxResult represents the result of a execution of a ethereum transaction in the block chain

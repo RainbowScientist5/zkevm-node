@@ -325,6 +325,152 @@
           "$ref": "#/components/schemas/FullBlockOrNull"
         }
       }
+    },
+    {
+      "name": "zkevm_getNativeBlockHashesInRange",
+      "summary": "Returns the list of native block hashes.",
+      "params": [
+        {
+          "name": "filter",
+          "schema": {
+            "$ref": "#/components/schemas/NativeBlockHashBlockRangeFilter"
+          }
+        }
+      ],
+      "result": {
+        "name": "filter",
+          "schema": {
+            "$ref": "#/components/schemas/NativeBlockHashes"
+          }
+      }
+    },
+    {
+      "name": "zkevm_getTransactionByL2Hash",
+      "summary": "Returns the information about a transaction requested by transaction l2 hash.",
+      "params": [
+        {
+          "$ref": "#/components/contentDescriptors/TransactionHash"
+        }
+      ],
+      "result": {
+        "$ref": "#/components/contentDescriptors/TransactionResult"
+      }
+    },
+    {
+      "name": "zkevm_getTransactionReceiptByL2Hash",
+      "summary": "Returns the receipt information of a transaction by its l2 hash.",
+      "params": [
+        {
+          "$ref": "#/components/contentDescriptors/TransactionHash"
+        }
+      ],
+      "result": {
+        "name": "transactionReceiptResult",
+        "description": "returns either a receipt or null",
+        "schema": {
+          "title": "transactionReceiptOrNull",
+          "oneOf": [
+            {
+              "$ref": "#/components/schemas/Receipt"
+            },
+            {
+              "$ref": "#/components/schemas/Null"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "zkevm_getExitRootsByGER",
+      "summary": "Gets the exit roots accordingly to the provided Global Exit Root",
+      "params": [
+        {
+          "$ref": "#/components/schemas/Keccak"
+        }
+      ],
+      "result": {
+        "$ref": "#/components/schemas/ExitRoots"
+      },
+      "examples": [
+        {
+          "name": "exit roots",
+          "params": [
+            {
+              "name": "global exit root",
+              "value": "0x0000000000000000000000000000000000000000000000000000000000000001"
+            }
+          ],
+          "result": {
+            "name": "Exit Roots",
+            "value": {
+              "blockNumber": "0x1",
+              "timestamp": "0x642af31f",
+              "mainnetExitRoot": "0x0000000000000000000000000000000000000000000000000000000000000002",
+              "rollupExitRoot": "0x0000000000000000000000000000000000000000000000000000000000000003"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "zkevm_getLatestGlobalExitRoot",
+      "summary": "Returns the latest global exit root used in a batch.",
+      "params": [
+      ],
+      "result": {
+        "name": "GER",
+          "schema": {
+            "$ref": "#/components/schemas/Keccak"
+          }
+      }
+    },
+    {
+      "name": "zkevm_estimateCounters",
+      "summary": "Estimates the transaction ZK Counters",
+      "params": [
+        {
+          "$ref": "#/components/contentDescriptors/Transaction"
+        }
+      ],
+      "result": {
+        "name": "counters",
+        "description": "The counters used, limits and revert info when tx reverted",
+        "schema": {
+          "$ref": "#/components/schemas/ZKCountersResponse"
+        }
+      }
+    },
+    {
+      "name": "zkevm_estimateFee",
+      "summary": "Estimates the transaction Fee following the effective gas price rules",
+      "params": [
+        {
+          "$ref": "#/components/contentDescriptors/Transaction"
+        }
+      ],
+      "result": {
+        "name": "fee",
+        "description": "The amount of the fee",
+        "schema": {
+          "$ref": "#/components/schemas/Integer"
+        }
+      }
+    },
+    {
+      "name": "zkevm_estimateGasPrice",
+      "summary": "Estimates the transaction Gas Price following the effective gas price rules",
+      "params": [
+        {
+          "$ref": "#/components/contentDescriptors/Transaction"
+        }
+      ],
+      "result": {
+        "name": "gasPrice",
+        "description": "The amount of gas price",
+        "schema": {
+          "$ref": "#/components/schemas/Integer"
+        }
+      }
     }
   ],
   "components": {
@@ -372,6 +518,35 @@
         "description": "A block object",
         "schema": {
           "$ref": "#/components/schemas/Block"
+        }
+      },
+      "Transaction": {
+        "required": true,
+        "name": "transaction",
+        "schema": {
+          "$ref": "#/components/schemas/Transaction"
+        }
+      },
+      "TransactionHash": {
+        "name": "transactionHash",
+        "required": true,
+        "schema": {
+          "$ref": "#/components/schemas/TransactionHash"
+        }
+      },
+      "TransactionResult": {
+        "name": "transactionResult",
+        "description": "Returns a transaction or null",
+        "schema": {
+          "title": "TransactionOrNull",
+          "oneOf": [
+            {
+              "$ref": "#/components/schemas/Transaction"
+            },
+            {
+              "$ref": "#/components/schemas/Null"
+            }
+          ]
         }
       }
     },
@@ -852,6 +1027,9 @@
           "hash": {
             "$ref": "#/components/schemas/TransactionHash"
           },
+          "l2Hash": {
+            "$ref": "#/components/schemas/TransactionHash"
+          },
           "input": {
             "title": "transactionInput",
             "type": "string",
@@ -1029,6 +1207,9 @@
           "transactionHash": {
             "$ref": "#/components/schemas/TransactionHash"
           },
+          "transactionL2Hash": {
+            "$ref": "#/components/schemas/TransactionHash"
+          },
           "transactionIndex": {
             "$ref": "#/components/schemas/TransactionIndex"
           },
@@ -1115,6 +1296,147 @@
         "type": "string",
         "description": "Hex representation of a variable length byte array",
         "pattern": "^0x([a-fA-F0-9]?)+$"
+      },
+      "NativeBlockHashes": {
+        "title": "native block hashes",
+        "description": "An array of hashes",
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/Keccak"
+        }
+      },
+      "NativeBlockHashBlockRangeFilter": {
+        "title": "NativeBlockHashBlockRangeFilter",
+        "type": "object",
+        "properties": {
+          "fromBlock": {
+            "$ref": "#/components/schemas/BlockNumber"
+          },
+          "toBlock": {
+            "$ref": "#/components/schemas/BlockNumber"
+          }
+        }
+      },
+      "ExitRoots": {
+        "title": "ExitRoots",
+        "type": "object",
+        "readOnly": true,
+        "properties": {
+          "blockNumber": {
+            "$ref": "#/components/schemas/BlockNumber"
+          },
+          "timestamp": {
+            "title": "timestamp",
+            "type": "string",
+            "description": "The unix timestamp of the block mentioned in the blockNumber field"
+          },
+          "mainnetExitRoot": {
+            "$ref": "#/components/schemas/Keccak"
+          },
+          "rollupExitRoot": {
+            "$ref": "#/components/schemas/Keccak"
+          }
+        }
+      },
+      "ZKCountersResponse": {
+        "title": "ZKCountersResponse",
+        "type": "object",
+        "readOnly": true,
+        "properties": {
+          "countersUsed": {
+            "$ref": "#/components/schemas/ZKCountersUsed"
+          },
+          "countersLimits": {
+            "$ref": "#/components/schemas/ZKCountersLimits"
+          },
+          "revertInfo": {
+            "$ref": "#/components/schemas/RevertInfo"
+          },
+          "oocError": {
+            "type": "string"
+          }
+        }
+      },
+      "ZKCountersUsed": {
+        "title": "ZKCountersUsed",
+        "type": "object",
+        "readOnly": true,
+        "properties": {
+          "gasUsed": {
+            "$ref": "#/components/schemas/Integer"
+          },
+          "usedKeccakHashes": {
+            "$ref": "#/components/schemas/Integer"
+          },
+          "usedPoseidonHashes": {
+            "$ref": "#/components/schemas/Integer"
+          },
+          "usedPoseidonPaddings": {
+            "$ref": "#/components/schemas/Integer"
+          },
+          "usedMemAligns": {
+            "$ref": "#/components/schemas/Integer"
+          },
+          "usedArithmetics": {
+            "$ref": "#/components/schemas/Integer"
+          },
+          "usedBinaries": {
+            "$ref": "#/components/schemas/Integer"
+          },
+          "usedSteps": {
+            "$ref": "#/components/schemas/Integer"
+          },
+          "usedSHA256Hashes": {
+            "$ref": "#/components/schemas/Integer"
+          }
+        }
+      },
+      "ZKCountersLimits":{
+        "title": "ZKCountersLimits",
+        "type": "object",
+        "readOnly": true,
+        "properties": {
+          "maxGasUsed": {
+            "$ref": "#/components/schemas/Integer"
+          },
+          "maxUsedKeccakHashes": {
+            "$ref": "#/components/schemas/Integer"
+          },
+          "maxUsedPoseidonHashes": {
+            "$ref": "#/components/schemas/Integer"
+          },
+          "maxUsedPoseidonPaddings": {
+            "$ref": "#/components/schemas/Integer"
+          },
+          "maxUsedMemAligns": {
+            "$ref": "#/components/schemas/Integer"
+          },
+          "maxUsedArithmetics": {
+            "$ref": "#/components/schemas/Integer"
+          },
+          "maxUsedBinaries": {
+            "$ref": "#/components/schemas/Integer"
+          },
+          "maxUsedSteps": {
+            "$ref": "#/components/schemas/Integer"
+          },
+          "maxUsedSHA256Hashes": {
+            "$ref": "#/components/schemas/Integer"
+          }
+        }
+      },
+      "RevertInfo":{
+        "title": "RevertInfo",
+        "type": "object",
+        "readOnly": true,
+        "properties": {
+          "message": {
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/Integer"
+          }
+        }
       }
     }
   }

@@ -10,7 +10,6 @@ import (
 	"mime"
 	"net"
 	"net/http"
-	"sync"
 	"syscall"
 	"time"
 
@@ -75,7 +74,10 @@ func NewServer(
 	storage storageInterface,
 	services []Service,
 ) *Server {
-	s.PrepareWebSocket()
+	if cfg.WebSockets.Enabled {
+		s.StartToMonitorNewL2Blocks()
+	}
+
 	handler := newJSONRpcHandler()
 
 	for _, service := range services {
@@ -207,6 +209,11 @@ func (s *Server) Stop() error {
 }
 
 func (s *Server) handle(w http.ResponseWriter, req *http.Request) {
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Accept, Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization")
+
 	if req.Method == http.MethodOptions {
 		return
 	}
@@ -237,11 +244,9 @@ func (s *Server) handle(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	s.increaseHttpConnCounter()
+
 	start := time.Now()
-	w.Header().Set("Content-Type", contentType)
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Accept, Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization")
 	var respLen int
 	if single {
 		respLen = s.handleSingleRequest(req, w, data)
@@ -249,7 +254,7 @@ func (s *Server) handle(w http.ResponseWriter, req *http.Request) {
 		respLen = s.handleBatchRequest(req, w, data)
 	}
 	metrics.RequestDuration(start)
-	combinedLog(req, start, http.StatusOK, respLen)
+	s.combinedLog(req, start, http.StatusOK, respLen)
 }
 
 // validateRequest returns a non-zero response code and error message if the
@@ -376,26 +381,34 @@ func (s *Server) handleWs(w http.ResponseWriter, req *http.Request) {
 	s.wsUpgrader.CheckOrigin = func(r *http.Request) bool { return true }
 
 	// Upgrade the connection to a WS one
-	wsConn, err := s.wsUpgrader.Upgrade(w, req, nil)
+	innerWsConn, err := s.wsUpgrader.Upgrade(w, req, nil)
 	if err != nil {
 		log.Error(fmt.Sprintf("Unable to upgrade to a WS connection, %s", err.Error()))
-
 		return
 	}
+
+	wsConn := newConcurrentWsConn(innerWsConn)
 
 	// Set read limit
 	wsConn.SetReadLimit(s.config.WebSockets.ReadLimit)
 
 	// Defer WS closure
-	defer func(ws *websocket.Conn) {
-		err = ws.Close()
+	defer func(wsConn *concurrentWsConn) {
+		err = wsConn.Close()
 		if err != nil {
 			log.Error(fmt.Sprintf("Unable to gracefully close WS connection, %s", err.Error()))
 		}
 	}(wsConn)
 
+	s.increaseWsConnCounter()
+
+	// recover
+	defer func() {
+		if err := recover(); err != nil {
+			log.Error(err)
+		}
+	}()
 	log.Info("Websocket connection established")
-	var mu sync.Mutex
 	for {
 		msgType, message, err := wsConn.ReadMessage()
 		if err != nil {
@@ -414,30 +427,33 @@ func (s *Server) handleWs(w http.ResponseWriter, req *http.Request) {
 		}
 
 		if msgType == websocket.TextMessage || msgType == websocket.BinaryMessage {
-			go func() {
-				mu.Lock()
-				defer mu.Unlock()
-				resp, err := s.handler.HandleWs(message, wsConn, req)
-				if err != nil {
-					log.Error(fmt.Sprintf("Unable to handle WS request, %s", err.Error()))
-					_ = wsConn.WriteMessage(msgType, []byte(fmt.Sprintf("WS Handle error: %s", err.Error())))
-				} else {
-					_ = wsConn.WriteMessage(msgType, resp)
-				}
-			}()
+			resp, err := s.handler.HandleWs(message, wsConn, req)
+			if err != nil {
+				log.Error(fmt.Sprintf("Unable to handle WS request, %s", err.Error()))
+				_ = wsConn.WriteMessage(msgType, []byte(fmt.Sprintf("WS Handle error: %s", err.Error())))
+			} else {
+				_ = wsConn.WriteMessage(msgType, resp)
+			}
 		}
 	}
 }
 
+func (s *Server) increaseHttpConnCounter() {
+	metrics.CountConn(metrics.HTTPConnLabel)
+}
+
+func (s *Server) increaseWsConnCounter() {
+	metrics.CountConn(metrics.WSConnLabel)
+}
+
 func handleInvalidRequest(w http.ResponseWriter, err error, code int) {
 	defer metrics.RequestHandled(metrics.RequestHandledLabelInvalid)
-	log.Infof("Invalid Request: %v", err.Error())
+	log.Debugf("Invalid Request: %v", err.Error())
 	http.Error(w, err.Error(), code)
 }
 
 func handleError(w http.ResponseWriter, err error) {
 	defer metrics.RequestHandled(metrics.RequestHandledLabelError)
-	log.Errorf("Error processing request: %v", err)
 
 	if errors.Is(err, syscall.EPIPE) {
 		// if it is a broken pipe error, return
@@ -445,6 +461,7 @@ func handleError(w http.ResponseWriter, err error) {
 	}
 
 	// if it is a different error, write it to the response
+	log.Errorf("Error processing request: %v", err)
 	http.Error(w, err.Error(), http.StatusInternalServerError)
 }
 
@@ -454,16 +471,22 @@ func RPCErrorResponse(code int, message string, err error, logError bool) (inter
 }
 
 // RPCErrorResponseWithData formats error to be returned through RPC
-func RPCErrorResponseWithData(code int, message string, data *[]byte, err error, logError bool) (interface{}, types.Error) {
-	if err != nil {
-		log.Errorf("%v: %v", message, err.Error())
-	} else {
-		log.Error(message)
+func RPCErrorResponseWithData(code int, message string, data []byte, err error, logError bool) (interface{}, types.Error) {
+	if logError {
+		if err != nil {
+			log.Debugf("%v: %v", message, err.Error())
+		} else {
+			log.Debug(message)
+		}
 	}
 	return nil, types.NewRPCErrorWithData(code, message, data)
 }
 
-func combinedLog(r *http.Request, start time.Time, httpStatus, dataLen int) {
+func (s *Server) combinedLog(r *http.Request, start time.Time, httpStatus, dataLen int) {
+	if !s.config.EnableHttpLog {
+		return
+	}
+
 	log.Infof("%s - - %s \"%s %s %s\" %d %d \"%s\" \"%s\"",
 		r.RemoteAddr,
 		start.Format("[02/Jan/2006:15:04:05 -0700]"),

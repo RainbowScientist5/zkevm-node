@@ -101,7 +101,7 @@ func (a *addrQueue) ExpireTransactions(maxTime time.Duration) ([]*TxTracker, *Tx
 		if txTracker.ReceivedAt.Add(maxTime).Before(time.Now()) {
 			txs = append(txs, txTracker)
 			delete(a.notReadyTxs, txTracker.Nonce)
-			log.Debugf("Deleting notReadyTx %s from addrQueue %s", txTracker.HashStr, a.fromStr)
+			log.Debugf("deleting notReadyTx %s from addrQueue %s", txTracker.HashStr, a.fromStr)
 		}
 	}
 
@@ -109,7 +109,7 @@ func (a *addrQueue) ExpireTransactions(maxTime time.Duration) ([]*TxTracker, *Tx
 		prevReadyTx = a.readyTx
 		txs = append(txs, a.readyTx)
 		a.readyTx = nil
-		log.Debugf("Deleting readyTx %s from addrQueue %s", prevReadyTx.HashStr, a.fromStr)
+		log.Debugf("deleting readyTx %s from addrQueue %s", prevReadyTx.HashStr, a.fromStr)
 	}
 
 	return txs, prevReadyTx
@@ -121,22 +121,25 @@ func (a *addrQueue) IsEmpty() bool {
 }
 
 // deleteTx deletes the tx from the addrQueue
-func (a *addrQueue) deleteTx(txHash common.Hash) (deletedReadyTx *TxTracker) {
+func (a *addrQueue) deleteTx(txHash common.Hash) (deletedTx *TxTracker, isReady bool) {
 	txHashStr := txHash.String()
 
 	if (a.readyTx != nil) && (a.readyTx.HashStr == txHashStr) {
-		log.Infof("Deleting readyTx %s from addrQueue %s", txHashStr, a.fromStr)
+		log.Infof("deleting readyTx %s from addrQueue %s", txHashStr, a.fromStr)
 		prevReadyTx := a.readyTx
 		a.readyTx = nil
-		return prevReadyTx
+		return prevReadyTx, true
 	} else {
+		var deletedTx *TxTracker
 		for _, txTracker := range a.notReadyTxs {
 			if txTracker.HashStr == txHashStr {
-				log.Infof("Deleting notReadyTx %s from addrQueue %s", txHashStr, a.fromStr)
+				deletedTx = txTracker
+				log.Infof("deleting notReadyTx %s from addrQueue %s", txHashStr, a.fromStr)
 				delete(a.notReadyTxs, txTracker.Nonce)
+				break
 			}
 		}
-		return nil
+		return deletedTx, false
 	}
 }
 
@@ -145,7 +148,7 @@ func (a *addrQueue) deleteForcedTx(txHash common.Hash) {
 	if _, found := a.forcedTxs[txHash]; found {
 		delete(a.forcedTxs, txHash)
 	} else {
-		log.Warnf("tx (%s) not found in forcedTxs list", txHash.String())
+		log.Warnf("tx %s not found in forcedTxs list", txHash.String())
 	}
 }
 
@@ -154,8 +157,24 @@ func (a *addrQueue) deletePendingTxToStore(txHash common.Hash) {
 	if _, found := a.pendingTxsToStore[txHash]; found {
 		delete(a.pendingTxsToStore, txHash)
 	} else {
-		log.Warnf("tx (%s) not found in pendingTxsToStore list", txHash.String())
+		log.Warnf("tx %s not found in pendingTxsToStore list", txHash.String())
 	}
+}
+
+func (a *addrQueue) getTransactions() []*TxTracker {
+	// TODO: Add test for this function
+
+	txsList := []*TxTracker{}
+
+	if a.readyTx != nil {
+		txsList = append(txsList, a.readyTx)
+	}
+
+	for _, tx := range a.notReadyTxs {
+		txsList = append(txsList, tx)
+	}
+
+	return txsList
 }
 
 // updateCurrentNonceBalance updates the nonce and balance of the addrQueue and updates the ready and notReady txs
@@ -164,7 +183,7 @@ func (a *addrQueue) updateCurrentNonceBalance(nonce *uint64, balance *big.Int) (
 	txsToDelete := make([]*TxTracker, 0)
 
 	if balance != nil {
-		log.Infof("Updating balance for addrQueue %s from %s to %s", a.fromStr, a.currentBalance.String(), balance.String())
+		log.Debugf("updating balance for addrQueue %s from %s to %s", a.fromStr, a.currentBalance.String(), balance.String())
 		a.currentBalance = balance
 	}
 
@@ -179,7 +198,7 @@ func (a *addrQueue) updateCurrentNonceBalance(nonce *uint64, balance *big.Int) (
 				}
 			}
 			for _, txTracker := range txsToDelete {
-				log.Infof("Deleting notReadyTx with nonce %d from addrQueue %s", txTracker.Nonce, a.fromStr)
+				log.Infof("deleting notReadyTx with nonce %d from addrQueue %s, reason: %s", txTracker.Nonce, a.fromStr, *txTracker.FailedReason)
 				delete(a.notReadyTxs, txTracker.Nonce)
 			}
 		}
@@ -201,7 +220,7 @@ func (a *addrQueue) updateCurrentNonceBalance(nonce *uint64, balance *big.Int) (
 		if found {
 			if a.currentBalance.Cmp(nrTx.Cost) >= 0 {
 				a.readyTx = nrTx
-				log.Infof("Moving notReadyTx %s to readyTx for addrQueue %s", nrTx.HashStr, a.fromStr)
+				log.Infof("set notReadyTx %s as readyTx for addrQueue %s", nrTx.HashStr, a.fromStr)
 				delete(a.notReadyTxs, a.currentNonce)
 			}
 		}
@@ -209,25 +228,29 @@ func (a *addrQueue) updateCurrentNonceBalance(nonce *uint64, balance *big.Int) (
 
 	// We add the oldReadyTx to notReadyTxs (if it has a valid nonce) at this point to avoid check it again in the previous if statement
 	if oldReadyTx != nil && oldReadyTx.Nonce > a.currentNonce {
-		log.Infof("Marking readyTx %s as notReadyTx from addrQueue %s", oldReadyTx.HashStr, a.fromStr)
+		log.Infof("set readyTx %s as notReadyTx from addrQueue %s", oldReadyTx.HashStr, a.fromStr)
 		a.notReadyTxs[oldReadyTx.Nonce] = oldReadyTx
+	} else if oldReadyTx != nil { // if oldReadyTx doesn't have a valid nonce then we add it to the txsToDelete
+		reason := runtime.ErrIntrinsicInvalidNonce.Error()
+		oldReadyTx.FailedReason = &reason
+		txsToDelete = append(txsToDelete, oldReadyTx)
 	}
 
 	return a.readyTx, oldReadyTx, txsToDelete
 }
 
 // UpdateTxZKCounters updates the ZKCounters for the given tx (txHash)
-func (a *addrQueue) UpdateTxZKCounters(txHash common.Hash, counters state.ZKCounters) {
+func (a *addrQueue) UpdateTxZKCounters(txHash common.Hash, usedZKCounters state.ZKCounters, reservedZKCounters state.ZKCounters) {
 	txHashStr := txHash.String()
 
 	if (a.readyTx != nil) && (a.readyTx.HashStr == txHashStr) {
-		log.Debugf("Updating readyTx %s with new ZKCounters from addrQueue %s", txHashStr, a.fromStr)
-		a.readyTx.updateZKCounters(counters)
+		log.Debugf("updating readyTx %s with new ZKCounters from addrQueue %s", txHashStr, a.fromStr)
+		a.readyTx.updateZKCounters(usedZKCounters, reservedZKCounters)
 	} else {
 		for _, txTracker := range a.notReadyTxs {
 			if txTracker.HashStr == txHashStr {
-				log.Debugf("Updating notReadyTx %s with new ZKCounters from addrQueue %s", txHashStr, a.fromStr)
-				txTracker.updateZKCounters(counters)
+				log.Debugf("updating notReadyTx %s with new ZKCounters from addrQueue %s", txHashStr, a.fromStr)
+				txTracker.updateZKCounters(usedZKCounters, reservedZKCounters)
 				break
 			}
 		}

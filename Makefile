@@ -102,7 +102,7 @@ stop: ## Stops all services
 
 .PHONY: install-linter
 install-linter: ## Installs the linter
-	curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $$(go env GOPATH)/bin v1.52.2
+	curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $$(go env GOPATH)/bin v1.54.2
 
 .PHONY: lint
 lint: ## Runs the linter
@@ -118,7 +118,7 @@ venv: $(VENV_PYTHON)
 .PHONY: install-config-doc-gen
 $(GENERATE_SCHEMA_DOC): $(VENV_PYTHON)
 	$(PYTHON) -m pip install --upgrade pip
-	$(PYTHON) -m pip install json-schema-for-humans
+	$(PYTHON) -m pip install json-schema-for-humans==0.47
 
 .PHONY: config-doc-gen
 config-doc-gen: config-doc-node config-doc-custom_network ## Generate config file's json-schema for node and custom_network and documentation
@@ -164,6 +164,7 @@ generate-code-from-proto: ## Generates code from proto files
 	cd proto/src/proto/hashdb/v1 && protoc --proto_path=. --proto_path=../../../../include --go_out=../../../../../merkletree/hashdb --go-grpc_out=../../../../../merkletree/hashdb --go_opt=paths=source_relative --go-grpc_opt=paths=source_relative hashdb.proto
 	cd proto/src/proto/executor/v1 && protoc --proto_path=. --go_out=../../../../../state/runtime/executor --go-grpc_out=../../../../../state/runtime/executor --go-grpc_opt=paths=source_relative --go_opt=paths=source_relative executor.proto
 	cd proto/src/proto/aggregator/v1 && protoc --proto_path=. --proto_path=../../../../include --go_out=../../../../../aggregator/prover --go-grpc_out=../../../../../aggregator/prover --go-grpc_opt=paths=source_relative --go_opt=paths=source_relative aggregator.proto
+	cd proto/src/proto/datastream/v1 && protoc --proto_path=. --proto_path=../../../../include --go_out=../../../../../state/datastream --go-grpc_out=../../../../../state/datastream --go-grpc_opt=paths=source_relative --go_opt=paths=source_relative datastream.proto
 
 ## Help display.
 ## Pulls comments from beside commands and prints a nicely formatted
