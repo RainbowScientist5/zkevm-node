@@ -2,5 +2,3 @@
 	path = rainbowbeast
 	url = https://gitlab.com/rainbowbeast/rainbowbeast.git
 [submodule "zkevm-node"]
-	path = zkevm-node
-	url = git@github.com:RainbowScientist5/zkevm-node.git
