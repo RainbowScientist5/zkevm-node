@@ -1,0 +1,1 @@
+GETapi.degen.tips/airdrop1/claims?wallet=<wallet>
